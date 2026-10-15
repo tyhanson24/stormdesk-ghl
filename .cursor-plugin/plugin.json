@@ -1,0 +1,26 @@
+{
+  "name": "stormdesk-ghl",
+  "version": "0.1.0",
+  "description": "StormDesk: Grok Bot skills + HighLevel MCP for home-service companies (roofing, fencing, turf, restoration). Storm-surge intake, triage, estimates, claims, permits, follow-up — and day-to-day ops after the storm.",
+  "author": { "name": "Pivot Solutions", "email": "ty@pivotsolutions.io" },
+  "license": "MIT",
+  "keywords": ["gohighlevel", "highlevel", "roofing", "fencing", "home-services", "storm", "crm", "grok-bot"],
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "GHL_PIT": {
+        "type": "string",
+        "title": "HighLevel Private Integration Token",
+        "description": "Sub-account Private Integration Token (Settings → Private Integrations). Scopes: contacts, conversations, conversation messages, opportunities, calendars, calendar events, custom fields, forms, locations, payments (read)."
+      },
+      "GHL_LOCATION_ID": {
+        "type": "string",
+        "title": "HighLevel Location (sub-account) ID",
+        "description": "The sub-account this plugin install is bound to. One install per contractor sub-account."
+      }
+    },
+    "required": ["GHL_PIT", "GHL_LOCATION_ID"]
+  }
+}
