@@ -1,0 +1,44 @@
+---
+name: storm-intake
+description: Turn a new inbound (missed-call text-back reply, web form, voicemail transcript, FB/Nextdoor message) into a qualified HighLevel contact + Storm Response opportunity with address, damage type, severity, photos, insurance status. Use whenever a new lead or reply arrives.
+---
+
+# Storm intake
+
+Goal: within minutes, every inbound becomes a complete contact + opportunity in `Storm Response › New Lead` or `Qualified – Needs Estimate`, and the homeowner knows they're on the list.
+
+## Trigger inputs you may receive
+- Webhook payload from GHL workflow `WF-02 New Storm Lead` (contact id, source, first message) → routine R1.
+- Email forwarded to the Bot's `+intake` alias.
+- Scheduled sweep: `conversations_search-conversation` for unread inbound in the last N minutes.
+
+## Steps
+1. Load `ghl-operating-rules`. Read company-profile, service-area, do-not-contact.
+2. `contacts_get-contact`. Read the full thread with `conversations_get-messages`.
+3. Extract: property address, damage type, severity words ("water coming in", "tarp", "shingles in yard", "fence down on neighbor's side"), photos attached?, insurance mentioned?, how they found us.
+4. Address check: inside service-area? If not → tag `out-of-area`, draft the out-of-area reply, stop.
+5. Severity: `Emergency` = active leak / open roof / structural / fence down onto road or pool (safety). `Major` = visible damage, no active leak. `Minor` = cosmetic. `Unknown` = no detail yet.
+6. Upsert contact fields: property_address, damage_type, damage_severity, has_photos, insurance_claim, lead_source, storm_event.
+7. Opportunity: search first. If none, create in `Storm Response › New Lead` with name `"{Last name} – {damage_type} – {street}"`. If address + severity + photos known → move to `Qualified – Needs Estimate`. If Emergency → tag `emergency` + `tarp-needed`, notify owner immediately (GHL SMS to the owner's contact record; WF-03 also calls the owner natively), keep in `New Lead` until Dispatcher schedules the tarp.
+8. Draft the reply (see templates). Missing info → ask for ONE thing at a time (address first, then photos).
+9. Set `next_followup_date` = +1 day if waiting on info, else leave for Dispatcher.
+10. Tag `bot-drafted`. Log.
+
+## Templates (adapt to company voice; never add price)
+
+**ACK-1** (first reply when address + damage known):
+"Thanks {first}. You're on our list for {street}. We're working {storm_event} damage in order of severity and date received. Next step: {we'll text you an estimate window / a crew lead will call about a temporary tarp}. Reply here anytime. — {Company}"
+
+**ASK-ADDRESS**: "Thanks for reaching out. What's the property address? Then send a couple photos of the damage if you can safely take them. — {Company}"
+
+**ASK-PHOTOS**: "Got it, {street}. If you can safely take 2–3 photos from the ground, text them here — it helps us put you in the right line. Don't climb. — {Company}"
+
+**OUT-OF-AREA**: "Thanks for reaching out. {Street} is outside the area we can reach right now while we work storm damage locally. If that changes we'll let you know. — {Company}"
+
+**STORM-CHASER-NOTE** (only if homeowner mentions door-knockers): add one line: "Quick note: ask any company for their Florida license number and local address before signing anything."
+
+## Scoring (writes `urgency_score`)
+Emergency 90–100 · Major with photos 60–80 · Major no photos 50 · Minor 20–40 · Insurance=Yes +5 · Elderly/medical mention +10 · Repeat customer +10 · out-of-area → 0.
+
+## Don't
+Quote price. Promise a date. Diagnose from photos ("you need a full replacement"). Send before approval unless `auto_ack: true` and the message is exactly ACK-1 / ASK-ADDRESS / ASK-PHOTOS.
