@@ -13,14 +13,14 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
 - Scheduled sweep: `conversations_search-conversation` for unread inbound in the last N minutes.
 
 ## Steps
-1. Load `ghl-operating-rules`. Read company-profile, service-area, do-not-contact.
+1. Load `ghl-operating-rules`. Read company-profile, service-area, do-not-contact. If a company file is missing, proceed with defaults (service area = any address in the sub-account's state; auto_ack = false; storm_event = the `storm_event` custom value) and say which files were missing in the log.
 2. `contacts_get-contact`. Read the full thread with `conversations_get-messages`.
 3. Extract: property address, damage type, severity words ("water coming in", "tarp", "shingles in yard", "fence down on neighbor's side"), photos attached?, insurance mentioned?, how they found us.
 4. Address check: inside service-area? If not → tag `out-of-area`, draft the out-of-area reply, stop.
 5. Severity: `Emergency` = active leak / open roof / structural / fence down onto road or pool (safety). `Major` = visible damage, no active leak. `Minor` = cosmetic. `Unknown` = no detail yet.
 6. Upsert contact fields: property_address, damage_type, damage_severity, has_photos, insurance_claim, lead_source, storm_event.
-7. Opportunity: search first. If none, create in `Storm Response › New Lead` with name `"{Last name} – {damage_type} – {street}"`. If address + severity + photos known → move to `Qualified – Needs Estimate`. If Emergency → tag `emergency` + `tarp-needed`, notify owner immediately (GHL SMS to the owner's contact record; WF-03 also calls the owner natively), keep in `New Lead` until Dispatcher schedules the tarp.
-8. Draft the reply (see templates). Missing info → ask for ONE thing at a time (address first, then photos).
+7. Opportunity (REST `POST /opportunities/`): search first with `opportunities_search-opportunity`. If none, create in `Storm Response › New Lead` with name `"{Last name} – {damage_type} – {street}"`. If address + severity + photos known → move to `Qualified – Needs Estimate`. If Emergency → tag `emergency` + `tarp-needed`, notify owner immediately (GHL SMS to the owner's contact record; WF-03 also calls the owner natively), keep in `New Lead` until Dispatcher schedules the tarp.
+8. Draft the reply (see templates). Write it as a contact note (REST) prefixed `DRAFT:` and create a contact task (REST) titled `Approve: intake reply → {name}` assigned to the owner, due now. Missing info → ask for ONE thing at a time (address first, then photos).
 9. Set `next_followup_date` = +1 day if waiting on info, else leave for Dispatcher.
 10. Tag `bot-drafted`. Log.
 
@@ -38,7 +38,7 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
 **STORM-CHASER-NOTE** (only if homeowner mentions door-knockers): add one line: "Quick note: ask any company for their Florida license number and local address before signing anything."
 
 ## Scoring (writes `urgency_score`)
-Emergency 90–100 · Major with photos 60–80 · Major no photos 50 · Minor 20–40 · Insurance=Yes +5 · Elderly/medical mention +10 · Repeat customer +10 · out-of-area → 0.
+Emergency 90–100 · Major with photos 60–80 · Major no photos 50 · Unknown (no detail yet) 40 · Minor 20–40 · Insurance=Yes +5 · Elderly/medical mention +10 · Repeat customer +10 · out-of-area → 0. Never leave urgency_score blank.
 
 ## Don't
 Quote price. Promise a date. Diagnose from photos ("you need a full replacement"). Send before approval unless `auto_ack: true` and the message is exactly ACK-1 / ASK-ADDRESS / ASK-PHOTOS.
