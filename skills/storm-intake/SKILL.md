@@ -20,7 +20,12 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
 5. Severity from the trade pack: `Emergency` = `{pack.emergency_rule}`. `Major` = `{pack.major_rule}`. `Minor` = `{pack.minor_rule}`. `Unknown` = no detail yet.
 6. Upsert contact fields: property_address, damage_type, damage_severity, has_photos, insurance_claim, lead_source, storm_event.
 7. Opportunity (REST `POST /opportunities/`): search first with `opportunities_search-opportunity`. If none, create in `Storm Response › New Lead` with name `"{Last name} – {damage_type} – {street}"`. If address + severity + photos known → move to `Qualified – Needs Estimate`. If Emergency → tag `emergency` + `{pack.emergency_tag}`, notify owner immediately (GHL SMS to the owner's contact record; WF-03 also calls the owner natively), keep in `New Lead` until Dispatcher schedules the tarp.
-8. Draft the reply (see templates). Write it as a contact note (REST) prefixed `DRAFT:` and create a contact task (REST) titled `Approve: intake reply → {name}` assigned to the owner, due now. Missing info → ask for ONE thing at a time (address first, then photos).
+8. Draft the reply (see templates). Write it as a contact note (REST) in exactly this format and nothing else:
+   ```
+   DRAFT: {template id} | sms | {ISO timestamp}
+   {message text, verbatim as it would be sent}
+   ```
+   Two lines only: no explanation, no severity notes, no "why" after the message (reasoning goes in your run log, not the note). Then create a contact task (REST) titled `Approve: intake reply → {name}` assigned to the owner, due now. Missing info → ask for ONE thing at a time (address first, then photos).
 9. Set `next_followup_date` = +1 day if waiting on info, else leave for Dispatcher.
 10. Tag `bot-drafted`. Log.
 
