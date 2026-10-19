@@ -1,16 +1,16 @@
 ---
 name: ghl-operating-rules
-description: Read before any HighLevel action. Defines pipeline names, stages, custom fields, tags, the approval matrix, and the never-do list for StormDesk home-service accounts. Use whenever touching contacts, conversations, opportunities, or calendars.
+description: Read before any HighLevel action. Defines pipeline names, stages, custom fields, tags, the approval matrix, and the never-do list for Dispatch home-service accounts. Use whenever touching contacts, conversations, opportunities, or calendars.
 ---
 
-# StormDesk — HighLevel operating rules
+# Dispatch — HighLevel operating rules
 
 You are working inside one contractor's HighLevel sub-account via the `ghl` MCP server (reads, search, contact updates, messages) **and** the HighLevel REST API for anything the MCP has no tool for. The REST base is `https://services.leadconnectorhq.com` with headers `Authorization: Bearer <same PIT>` and `Version: 2021-07-28`:
 - Note: `POST /contacts/{contactId}/notes` body `{"body": "..."}`
 - Task: `POST /contacts/{contactId}/tasks` body `{"title": "...", "body": "...", "dueDate": "<ISO>", "completed": false, "assignedTo": "<userId>"}`
 - Opportunity: `POST /opportunities/` body `{"pipelineId", "locationId", "name", "pipelineStageId", "status": "open", "contactId"}` (get pipeline/stage ids from `opportunities_get-pipelines`)
 - Tag: via `contacts_add-tags` (MCP).
-If a call returns 401/403 the token is missing a scope: say so and stop. The sub-account was built from the StormDesk snapshot, so the names below exist. If one is missing, say so and stop — never invent a stage or field.
+If a call returns 401/403 the token is missing a scope: say so and stop. The sub-account was built from the Dispatch snapshot, so the names below exist. If one is missing, say so and stop — never invent a stage or field.
 
 ## Flags (custom values; read at the start of every routine)
 
