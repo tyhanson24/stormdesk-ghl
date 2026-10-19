@@ -27,12 +27,14 @@ Enroll each lead in WF-02 explicitly with REST `POST /contacts/{contactId}/workf
 For each lead, read the contact back with `contacts_get-contact` and the opportunity with `opportunities_search-opportunity`, then compare every expected item above. Also run these global checks:
 
 - `no_sends`: `conversations_search-conversation` shows zero outbound messages for all three contacts.
-- `webhook_latency`: R1 started within 90 s of the tag being added (compare timestamps).
+- `webhook_latency`: R1 started within 90 s of the enrollment call (`POST /contacts/{id}/workflow/{wf02Id}`) returning — compare that call's timestamp with the start of R1's log. If you cannot see R1's chat log from inside the runner, use the time of the first note or tag R1 wrote on the contact.
 - `fields_complete`: `property_address`, `damage_type`, `damage_severity`, `has_photos`, `insurance_claim`, `lead_source`, `storm_event`, `urgency_score` all non-blank on G1 and G2.
 - `one_opportunity`: exactly one open opportunity per contact on G1/G2, zero on G3.
 - `template_exact`: DRAFT text equals the pack template with placeholders filled, no extra sentences, no `$`, no `!`, ends with company name.
 - `task_assigned`: G1/G2 tasks have `assignedTo` = `owner_user_id`.
-- `log_present`: your own R1 log for each lead is 3–8 lines and names test mode.
+- `log_present`: your own R1 log for each lead is 3–8 lines and names test mode. If the runner cannot read R1's chat log, grade this from R1's footprint on the contact (DRAFT note + task + tags all present within one run) and say "log inferred" in the report.
+- `draft_format`: every `DRAFT:` note is exactly two lines — header `DRAFT: {template} | sms | {timestamp}` then the message — with nothing appended.
+- `owner_reachable`: the contact at `owner_contact_id` has a phone number (G1's emergency alert and the SMS brief go there). Blank → FAIL.
 
 ## Report (post in chat and save as a note on the owner contact)
 ```
@@ -40,7 +42,7 @@ GOLDEN TEST — {company} — {date time}
 G1 Emergency   PASS/FAIL  (list failed checks)
 G2 Minor       PASS/FAIL
 G3 Out-of-area PASS/FAIL
-Global         no_sends ✓ latency 42s ✓ fields ✓ one_opp ✓ template ✓ task ✓ log ✓
+Global         no_sends ✓ latency 42s ✓ fields ✓ one_opp ✓ template ✓ task ✓ log ✓ draft_format ✓ owner_reachable ✓
 RESULT: PASS | FAIL (n checks)
 ```
 
