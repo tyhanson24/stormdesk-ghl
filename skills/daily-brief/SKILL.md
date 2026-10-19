@@ -5,6 +5,8 @@ description: 6:00 AM owner brief — new leads overnight, today's emergency and 
 
 # Daily brief
 
+Read custom value `bot_last_health` first (written by `health-check`); its failing checks are the BLOCKED line.
+
 Keep it under 25 lines. Owner reads it in the truck.
 
 ## Pull
