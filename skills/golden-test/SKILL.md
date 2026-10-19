@@ -8,12 +8,12 @@ description: Acceptance test for a sub-account. Submits three canned leads, runs
 Purpose: prove the whole chain works on this sub-account before real homeowners touch it, and catch regressions after edits. It never sends anything: it forces `mode: test` for the duration and restores the previous mode afterward.
 
 ## Setup
-1. Read `company-profile.md`; record `mode`, then set custom value `mode` = `test`.
+1. Read custom value `mode` (the custom value is the source of truth, not company-profile); record it, then set `mode` = `test`.
 2. Confirm `bots_enabled` = `true`, the `ghl` MCP answers `locations_get-location`, and `opportunities_get-pipelines` returns `Storm Response` and `Standard Jobs`. If not → FAIL `preflight` and stop.
 3. Load the trade pack named in company-profile (`/workspace/trades/{trade}.md`). If missing → FAIL `trade_pack` and stop.
 
 ## The three leads (create via REST `POST /contacts/`, tag each `golden-test`)
-Use the owner's phone/email so nothing can reach a stranger even if a gate fails.
+Create them with NO phone and an email on the bot's own plus-alias (`{bot_email_user}+g1@{bot_email_domain}`, `+g2`, `+g3`) so GHL dedupe never collides with the owner and nothing can reach a stranger even if a gate fails. Put the lead's message text in a contact note titled `INBOUND:` since there is no conversation thread.
 
 | # | Name | Payload | Expected |
 |---|---|---|---|
@@ -21,7 +21,7 @@ Use the owner's phone/email so nothing can reach a stranger even if a gate fails
 | G2 | Golden Minor | address inside service area, damage_type = pack's primary type, message "{pack.minor_phrase}", no photos, insurance No | severity `Minor`; tags `storm-lead`, `needs-photos`, `bot-drafted`; stage `New Lead`; urgency 20–40; template `ASK-PHOTOS`; `next_followup_date` = tomorrow; **0 sends** |
 | G3 | Golden Out-of-area | address with a ZIP not in service-area.md, message "roof damage" | tag `out-of-area`; urgency 0; template `OUT-OF-AREA`; **no opportunity created**; **0 sends** |
 
-Each lead is enrolled in WF-02 by adding the tag `storm-lead` (WF-02's tag trigger), which exercises the real webhook path. Wait up to 3 minutes per lead for R1 to finish.
+Enroll each lead in WF-02 explicitly with REST `POST /contacts/{contactId}/workflow/{wf02Id}` (find `wf02Id` via `GET /workflows/?locationId=` by name `WF-02`, or the custom value `wf02_id` if present). Do not rely on the `storm-lead` tag trigger: tags set at creation do not fire it. Confirm enrollment with the workflow's enrollment history if readable; otherwise wait up to 3 minutes for R1 to post its log. If R1 never fires, mark `webhook_latency` FAIL and still run intake directly so the remaining checks can be graded (say so in the report).
 
 ## Grading
 For each lead, read the contact back with `contacts_get-contact` and the opportunity with `opportunities_search-opportunity`, then compare every expected item above. Also run these global checks:
@@ -45,7 +45,7 @@ RESULT: PASS | FAIL (n checks)
 ```
 
 ## Teardown
-Delete nothing. Tag the three contacts `golden-test` (already) and close their opportunities as `Closed Lost` with reason "golden test". Restore `mode` to the value recorded in Setup. If the previous mode was `shadow` or `test`, say so in the report so the owner knows the account is not live yet.
+Delete nothing. Tag the three contacts `golden-test` (already) and close their opportunities as `Closed Lost` with reason "golden test". Restore custom value `mode` to the value recorded in Setup (never from company-profile). If the previous mode was `shadow` or `test`, say so in the report so the owner knows the account is not live yet.
 
 ## Rules
 A FAIL on any check means the sub-account is not live-ready. Never "fix" a result by editing data by hand; fix the skill or the setup, then rerun. Run after every change to any skill file, the snapshot, or the trade pack.
