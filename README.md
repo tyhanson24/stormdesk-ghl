@@ -1,4 +1,4 @@
-# StormDesk — HighLevel plugin for Grok Bot
+# Dispatch — HighLevel plugin for Grok Bot
 
 Gives a Grok Bot structured access to one HighLevel sub-account through HighLevel's official MCP server, plus the operating skills a home-service company needs during a storm surge and in normal weeks.
 
@@ -11,7 +11,7 @@ Tools available through the MCP (depends on scopes): `contacts_*` (get, search, 
 ## Install
 
 1. In the contractor's sub-account: Settings → Private Integrations → create token with the scopes listed in `.cursor-plugin/plugin.json`. Copy the token and the Location ID (Settings → Business Profile).
-2. Local test: clone this folder to `~/.cursor/plugins/local/stormdesk-ghl`, reload Cursor, set `GHL_PIT` and `GHL_LOCATION_ID` under Plugins → Configure.
+2. Local test: clone this folder to `~/.cursor/plugins/local/dispatch-ghl`, reload Cursor, set `GHL_PIT` and `GHL_LOCATION_ID` under Plugins → Configure.
 3. Marketplace: push to a public repo, submit at cursor.com/marketplace/publish. After approval, install from Grok Bot → Plugins, enter the two variables.
 4. One plugin install = one sub-account. For multiple contractors on one Grok Bot account, see the agency note in `../RUNBOOK.md` (shared-machine limitation).
 
