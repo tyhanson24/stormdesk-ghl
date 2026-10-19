@@ -25,7 +25,7 @@ Nothing goes out without passing all checks. If any check fails: do not send, wr
 5. **Template integrity.** If a template id is set, the text must match that template with only placeholders substituted. Any added sentence → BLOCKED `template_drift`.
 6. **Content rules.**
    - No `$` followed by a digit, no "ballpark", "around", "roughly" next to a number → BLOCKED `price`.
-   - No calendar date or weekday unless the message carries a `booked_event_id` or a confirmed opportunity field it came from → BLOCKED `date`.
+   - No calendar date or weekday unless the message carries a `booked_event_id` or a confirmed opportunity field it came from → BLOCKED `date`. The `storm_event` value (e.g. "Isaias 2026-10") is a label, not a date; never flag it.
    - No `!` in storm mode → BLOCKED `tone`.
    - Must end with the company name → BLOCKED `signature`.
    - Must be ≤ 320 characters for SMS → BLOCKED `length`.
