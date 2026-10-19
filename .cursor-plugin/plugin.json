@@ -1,7 +1,7 @@
 {
-  "name": "stormdesk-ghl",
+  "name": "dispatch-ghl",
   "version": "0.2.0",
-  "description": "StormDesk: Grok Bot skills + HighLevel MCP for home-service companies (roofing, fencing, gutters, screen enclosures, tree service, restoration — trade packs). Storm-surge intake, triage, estimates, claims, permits, follow-up — and day-to-day ops after the storm.",
+  "description": "Dispatch: Grok Bot skills + HighLevel MCP for home-service companies (roofing, fencing, gutters, screen enclosures, tree service, restoration — trade packs). Storm-surge intake, triage, estimates, claims, permits, follow-up — and day-to-day ops after the storm.",
   "author": { "name": "Pivot Solutions", "email": "ty@pivotsolutions.io" },
   "license": "MIT",
   "keywords": ["gohighlevel", "highlevel", "roofing", "fencing", "home-services", "storm", "crm", "grok-bot"],
@@ -13,7 +13,7 @@
       "GHL_PIT": {
         "type": "string",
         "title": "HighLevel Private Integration Token",
-        "description": "Sub-account Private Integration Token (Settings → Private Integrations). Scopes: contacts, conversations, conversation messages, opportunities, calendars, calendar events, custom fields, forms, locations, payments (read)."
+        "description": "Sub-account Private Integration Token (Settings → Private Integrations). Scopes: contacts, conversations, conversation messages, opportunities, calendars, calendar events, custom fields (view), custom values (view+edit), tags (view+edit), forms, locations, users (view), workflows (view)."
       },
       "GHL_LOCATION_ID": {
         "type": "string",
