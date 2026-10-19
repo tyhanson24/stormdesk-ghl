@@ -20,7 +20,7 @@ Keep it under 25 lines. Owner reads it in the truck.
 
 ## Format
 ```
-STORMDESK BRIEF – {Day, date} – {Company}
+DISPATCH BRIEF – {Day, date} – {Company}
 NEW: {n} leads overnight ({emergency} emergency, {major} major) · {unanswered} unanswered > 2h
 TODAY: {n} tarps · {n} estimates ({estimator}: {n}) · {n} installs · {n} adjuster meetings
 APPROVALS WAITING: {n} texts, {n} estimates, {n} permit fees (${total}) → reply APPROVE ALL or open the queue
