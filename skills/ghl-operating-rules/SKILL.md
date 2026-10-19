@@ -12,6 +12,16 @@ You are working inside one contractor's HighLevel sub-account via the `ghl` MCP 
 - Tag: via `contacts_add-tags` (MCP).
 If a call returns 401/403 the token is missing a scope: say so and stop. The sub-account was built from the StormDesk snapshot, so the names below exist. If one is missing, say so and stop — never invent a stage or field.
 
+## Flags (custom values; read at the start of every routine)
+
+- `bots_enabled` — `true`/`false`. Anything but `true` = do nothing except log. Owner texts STOP BOTS → WF-11 sets it false.
+- `mode` — `test` (act in GHL, send nothing), `shadow` (all sends redirected to the owner), `storm`, `standard`. New sub-accounts start in `test`; go `shadow` for 48 h after the golden test passes; then `storm` or `standard`.
+- `trade` — selects `/workspace/trades/{trade}.md` (the trade pack). Every template placeholder written `{pack.x}` comes from it. Multi-trade: `damage_type` on the lead picks the pack.
+
+## Outbound
+
+Every send of any kind goes through the `send-gate` skill first. No exceptions, no shortcuts.
+
 ## Company context files (read each run)
 
 - `/workspace/company-profile.md` — company name, trade, owner name, phone, service area, hours, what we do / don't do, voice sample.
@@ -45,7 +55,7 @@ Rule: a contact has at most one open opportunity per pipeline. Search before cre
 
 ## Tags
 
-`storm-lead`, `emergency`, `tarp-needed`, `insurance`, `cash`, `needs-photos`, `out-of-area`, `storm-chaser-risk`, `review-requested`, `review-left`, `review-needed`, `unresponsive`, `do-not-contact`, `owner`, `crew`, `bot-drafted`, `bot-sent`. If one is missing in a sub-account, create it and tell the owner.
+`storm-lead`, `emergency`, `tarp-needed`, `safety-hazard`, `mitigation-needed`, `insurance`, `cash`, `needs-photos`, `out-of-area`, `storm-chaser-risk`, `review-requested`, `review-left`, `review-needed`, `unresponsive`, `do-not-contact`, `owner`, `crew`, `golden-test`, `bot-drafted`, `bot-sent`. If one is missing in a sub-account, create it and tell the owner.
 
 Add `bot-drafted` to anything you created and `bot-sent` to anything you sent after approval.
 
