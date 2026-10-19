@@ -9,7 +9,7 @@ Runs before the brief so the brief can say what is broken. Read-only except for 
 
 ## Checks
 1. **Connection** — `locations_get-location` returns this sub-account; `opportunities_get-pipelines` lists `Storm Response` and `Standard Jobs` with all stages named in `ghl-operating-rules`. Missing → `pipelines`.
-2. **Schema** — the 25 custom fields and 17 tags from `ghl-operating-rules` exist (sample 5 fields via a contact read; list tags via `contacts_search` facets or REST `GET /locations/{id}/tags`). Missing → `schema`.
+2. **Schema** — the 25 custom fields and 20 tags from `ghl-operating-rules` exist (sample 5 fields via a contact read; list tags via `contacts_search` facets or REST `GET /locations/{id}/tags`). Missing → `schema`.
 3. **Custom values** — `bots_enabled`, `mode`, `trade`, `storm_event`, `company_name`, `owner_phone`, `wh_intake`, `wh_approval`, `bot_webhook_key`, `bot_webhook_key_intake` exist and none still contain `REPLACE`. Fail → `custom_values`.
 4. **Company files** — `/workspace/company-profile.md`, `service-area.md`, `pricing-guardrails.md`, `do-not-contact.csv`, and `/workspace/trades/{trade}.md` exist and parse. `owner_contact_id` and `owner_user_id` resolve to a real contact and user. Fail → `company_files`.
 5. **Phone** — at least one LC Phone number on the sub-account; if `mode` is `storm` or `standard`, A2P status must be approved (REST `GET /phone-system/...` if available; else read the custom value `a2p_status` the agency maintains). Fail → `phone` (warning only in `test`/`shadow`).
