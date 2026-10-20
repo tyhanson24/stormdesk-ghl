@@ -128,7 +128,34 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       dncList: dnc,
     };
 
-    const messages: Msg[] = [{ role: "user", content: spec.task(job.payload ?? {}) }];
+    // Intake: the webhook rarely carries the inbound text (missed-call text-backs and golden-test leads put it in an
+    // INBOUND: note). Fetch it deterministically so classification never depends on the model remembering to look.
+    let inbound = typeof job.payload?.message === "string" ? job.payload.message.trim() : "";
+    if (job.kind === "intake" && job.payload?.contact_id) {
+      try {
+        const notesRaw = await callTool(loc, "contacts_get-notes", { contactId: job.payload.contact_id });
+        const notes: any[] = JSON.parse(notesRaw.text).notes ?? [];
+        const inboundNotes = notes.filter((n) => /^\s*INBOUND:/i.test(n.body ?? "")).sort((a, b) => String(b.dateAdded).localeCompare(String(a.dateAdded)));
+        if (!inbound && inboundNotes[0]) inbound = String(inboundNotes[0].body).replace(/^\s*INBOUND:\s*/i, "").trim();
+        if (!inbound) {
+          const convRaw = await callTool(loc, "conversations_search-conversation", { contactId: job.payload.contact_id, limit: 1 });
+          const conv = (JSON.parse(convRaw.text).conversations ?? [])[0];
+          if (conv?.id) {
+            const msgsRaw = await callTool(loc, "conversations_get-messages", { conversationId: conv.id, limit: 10 });
+            const msgs: any[] = JSON.parse(msgsRaw.text).messages?.messages ?? JSON.parse(msgsRaw.text).messages ?? [];
+            const lastIn = msgs.find((m) => m.direction === "inbound" && m.body);
+            if (lastIn) inbound = String(lastIn.body).trim();
+          }
+        }
+        log({ tool: "inbound_lookup", ok: true, ms: Date.now() - t0, result_excerpt: inbound ? inbound.slice(0, 200) : "(no inbound text found)" });
+      } catch (e) { log({ tool: "inbound_lookup", ok: false, ms: Date.now() - t0, result_excerpt: String(e).slice(0, 200) }); }
+      gctx.inboundText = inbound || undefined;
+    }
+    const taskText = spec.task(job.payload ?? {}) + (job.kind === "intake"
+      ? (inbound ? `\n\nINBOUND MESSAGE FROM THE LEAD (verbatim — this is what you are classifying; copy any address from it exactly, including the house number): """${inbound}"""`
+                 : `\n\nNo inbound message text exists yet for this lead (webhook had none, no INBOUND: note, no inbound conversation). Treat it as a lead with unknown damage: ask for the one most useful thing (address first, then photos).`)
+      : "");
+    const messages: Msg[] = [{ role: "user", content: taskText }];
     let calls = 0, finalText = "";
     for (let turn = 0; turn < MAX_TOOL_CALLS + 5; turn++) {
       if (Date.now() - t0 > JOB_BUDGET_MS) throw new Error("job time budget exceeded");
