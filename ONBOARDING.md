@@ -27,12 +27,16 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 
 ## The flow
 1. **Call (15 min).** Fill the intake form with the client on the phone, or send them the link. Submission creates a contact in PIVOT tagged `dispatch-onboarding` (WF-00 in PIVOT — to build).
-2. **Sub-account (2 min, Office).** Office creates the sub-account from snapshot `iIvtMHToswxykXgyB0G8` using an agency token from the broker, named after `company_name`, address/phone/website from the form. The marketplace app auto-installs on the new sub-account.
-3. **Token (0 min).** Gone. The gateway mints a sub-account token from the agency install on first use.
-4. **Number + A2P (10 min, Ty clicks submit).** Office buys one local number via agency token, drafts the A2P packet from the trade pack + intake answers, and opens the registration page. Ty reviews and submits. Standard brand, Low Volume Mixed campaign.
-5. **Setup (Office, unattended).** `setup-customer`: fill the 16 custom values (ALL overwritten — template keys must never survive), create routines R0/R1/R9/R14 and write their URLs/keys back, write company-profile / service-area / do-not-contact from the form, load `/workspace/trades/{trade}.md`, set `mode=test`, add owner user to the sub-account, create owner contact, run `golden-test`, post the report.
-6. **Welcome (automatic on golden PASS).** Owner gets the welcome text + email: brief at 5:50, APPROVE n / NO n / EDIT n, STOP BOTS.
+2. **Setup (2–3 min, Office, one tool call).** Say "set up <Company>" to Office. The `setup-customer` skill calls `dispatch_setup-customer` (gateway → `dispatch-setup` edge function), which: creates the sub-account from snapshot `iIvtMHToswxykXgyB0G8` with an agency token (or reuses `location_id`), waits for the snapshot, creates the tenant row + per-client ingest key, upserts the owner contact (tag `owner`), overwrites **all 16 custom values** (`wh_*` → `dispatch-ingest/<kind>`, `bot_webhook_key*` → ingest key, `wf02_id`, `mode=test`, `bots_enabled=true`, trade, company, owner phone, address, license, review link, storm event), writes company-profile / service-area / pricing-guardrails / do-not-contact into `tenant_files`, and returns the remaining-steps list. Idempotent: re-run with `location_id`.
+   - Needs HighLevel to allow API sub-account creation (Agency Pro). If it refuses, create the sub-account from the snapshot in the UI and re-run with `location_id`.
+   - The marketplace app auto-installs on the new sub-account; the gateway mints its token from the agency install.
+3. **Owner user (1 min, Ty).** Add the owner as a user on the sub-account (our app has `users.readonly` only). Re-run setup with `location_id` so `owner_user_id` is stored (tasks are assigned to it).
+4. **Number + A2P (10 min, Ty clicks submit).** Buy one local number; A2P packet from the trade pack + intake answers (generator still to build). Standard brand, Low Volume Mixed campaign.
+5. **Golden test (Office, 8 min).** "run golden-test on <Company>" — the cloud worker runs intake; Office grades. Must PASS.
+6. **Welcome (needs Ty's approval of the copy).** Owner gets the welcome text + email: brief at 5:50, APPROVE n / NO n / EDIT n, STOP BOTS.
 7. **Go-live.** A2P approved → `mode=shadow` 48 h → Ty flips `mode=storm` or `standard`.
+
+Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 post to `dispatch-ingest` and the cloud worker runs them (`platform/WORKER.md`).
 
 ## Guards
 - `health-check` fails hard if any custom value still equals the template's value (webhook keys, wf02_id) or contains REPLACE.
@@ -41,7 +45,7 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 
 ## Still to build
 - WF-00 (PIVOT): form submit → tag → notify Ty → webhook to Office "new client".
-- `setup-customer` skill.
+- ~~`setup-customer` skill~~ — done (`skills/setup-customer`, `platform/supabase/functions/dispatch-setup`).
 - WF-00 welcome sequence inside the snapshot (text + email + day-3 recap).
 - A2P packet generator (template in `config/a2p-template.md`).
 - ~~Marketplace OAuth app~~ — done (platform/).
