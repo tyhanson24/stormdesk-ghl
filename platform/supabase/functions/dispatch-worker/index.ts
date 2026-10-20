@@ -40,13 +40,22 @@ async function mcp(loc: string, method: string, params: unknown) {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     signal: AbortSignal.timeout(60_000),
   });
-  const j = await r.json();
-  if (j.error) throw new Error(`gateway ${method}: ${j.error.message}`);
+  const text = await r.text();
+  let j: any; try { j = JSON.parse(text); } catch { throw new Error(`gateway ${method}: HTTP ${r.status} ${text.slice(0, 200)}`); }
+  if (!r.ok || j.error) throw new Error(`gateway ${method}: ${j?.error?.message ?? (typeof j?.error === "string" ? j.error : JSON.stringify(j?.error ?? j).slice(0, 200))}`);
   return j.result;
 }
+// One retry on transport-level failures (gateway 5xx / broker hiccup / timeout) so a blip doesn't cost a whole attempt.
 async function callTool(loc: string, name: string, args: unknown): Promise<{ text: string; isError: boolean }> {
-  const res = await mcp(loc, "tools/call", { name, arguments: args });
-  return { text: res?.content?.[0]?.text ?? "", isError: !!res?.isError };
+  for (let i = 0; ; i++) {
+    try {
+      const res = await mcp(loc, "tools/call", { name, arguments: args });
+      return { text: res?.content?.[0]?.text ?? "", isError: !!res?.isError };
+    } catch (e) {
+      if (i >= 1) throw e;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
 }
 
 // ---------- model ----------
@@ -186,8 +195,12 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
             await db.from("outbound_log").insert({ location_id: loc, job_id: job.id, contact_id: v.args.contactId, channel: v.args.type, template: template ?? null, text_hash: h, verdict: r.isError ? "error" : (v.redirected ? "redirected:shadow" : "sent"), detail: r.isError ? r.text.slice(0, 300) : (v.redirected ? "shadow redirect to owner" : null) });
           }
         } else {
-          const r = await callTool(loc, u.name, u.input);
-          text = r.text; isError = r.isError;
+          try {
+            const r = await callTool(loc, u.name, u.input);
+            text = r.text; isError = r.isError;
+          } catch (e) {
+            text = `TRANSIENT ERROR calling ${u.name}: ${String((e as Error)?.message ?? e).slice(0, 300)}. You may retry this call once.`; isError = true;
+          }
         }
         log({ tool: u.name, args: u.name === SEND ? { ...u.input, message: String(u.input.message ?? "").slice(0, 200) } : u.input, ok: !isError, ms: Date.now() - ts, result_excerpt: text.slice(0, 300) });
         results.push({ type: "tool_result", tool_use_id: u.id, content: text.slice(0, 20_000), is_error: isError });
@@ -208,9 +221,9 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
     const dead = job.attempts >= job.max_attempts;
-    const delayMin = Math.min(60, 2 ** job.attempts);
+    const delaySec = Math.min(3600, 30 * 4 ** (job.attempts - 1));   // 30 s, 2 min, 8 min, 32 min, 60 min
     await db.from("job_runs").update({ finished_at: new Date().toISOString(), status: "failed", steps, input_tokens: inTok, output_tokens: outTok, error: msg }).eq("id", run.id);
-    await db.from("jobs").update({ status: dead ? "dead" : "queued", last_error: msg, locked_at: null, locked_by: null, run_after: new Date(Date.now() + delayMin * 60_000).toISOString(), finished_at: dead ? new Date().toISOString() : null }).eq("id", job.id);
+    await db.from("jobs").update({ status: dead ? "dead" : "queued", last_error: msg, locked_at: null, locked_by: null, run_after: new Date(Date.now() + delaySec * 1000).toISOString(), finished_at: dead ? new Date().toISOString() : null }).eq("id", job.id);
   }
 }
 
