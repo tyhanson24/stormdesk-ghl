@@ -42,6 +42,7 @@ Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 post t
 - `health-check` fails hard if any custom value still equals the template's value (webhook keys, wf02_id) or contains REPLACE.
 - `send-gate` blocks everything in `test`; redirects to owner in `shadow`.
 - Nothing is sent to anyone but the owner until mode is `storm`/`standard`.
+- In `storm`/`standard`, a homeowner SMS also needs: a consent row (they texted/formed/called in, or the owner attested), an approved 10DLC campaign or a verified toll-free bridge number, and no carrier pause. See `platform/WORKER.md` → Compliance.
 
 ## Still to build
 - WF-00 (PIVOT): form submit → tag → notify Ty → webhook to Office "new client".
