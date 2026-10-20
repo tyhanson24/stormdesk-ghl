@@ -41,9 +41,11 @@ const KIND_SPEC: Record<string, { skills: string[]; task: (p: any) => string }> 
   approval_reply: { skills: [], task: (p) => `Owner replied to an approval. Reply text: ${JSON.stringify(p.message ?? p.body ?? "")}. Owner contact: ${p.contact_id}. Find the matching open "Approve:" task(s) on the owner's tasks and the DRAFT notes they reference. APPROVE ALL / APPROVE n → send that draft exactly as written via conversations_send-a-new-message with template set to the draft's template id and approval set to "owner-reply"; tag bot-sent; mark the task complete; convert the DRAFT note to SENT. NO n → mark the task complete with the owner's note, do not send. EDIT n <text> → replace the draft text, re-run the gate, send. Anything else → leave tasks open and say so.` },
   appointment_completed: { skills: ["estimate-drafting"], task: (p) => `Appointment complete for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Draft the estimate from the appointment notes and photos per estimate-drafting. Stage for approval as a contact task. Send nothing.` },
   crew_done: { skills: ["permits-inspections"], task: (p) => `Job marked done for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Per permits-inspections: request inspection, draft the homeowner window text as a DRAFT note + approval task. Send nothing to the homeowner.` },
-  daily_brief: { skills: ["daily-brief"], task: (p) => `Produce the daily brief per daily-brief. Deliver it to the owner's contact record (SMS + email) through the gate. Pending approvals (use these exact numbers in the APPROVE n lines): ${JSON.stringify(p.pending_approvals ?? [])}` },
+  daily_brief: { skills: ["daily-brief"], task: (p) => `Produce the daily brief per daily-brief. Deliver it to the owner's contact record (SMS + email) through the gate. Pending approvals (use these exact numbers in the APPROVE n lines): ${JSON.stringify(p.pending_approvals ?? [])}. Compliance line for the BLOCKED/STATUS section (verbatim): ${p.compliance ?? "n/a"}` },
   health_check: { skills: ["health-check"], task: () => `Run health-check. Write bot_last_health. Report hard failures.` },
   welcome: { skills: [], task: () => "(code-only: owner welcome sequence)" },
+  delivery_check: { skills: [], task: () => "(code-only: delivery status + carrier-block monitor)" },
+  optout: { skills: [], task: () => "(code-only: STOP keyword → consent ledger + DND)" },
   custom: { skills: [], task: (p) => String(p.instruction ?? "No instruction given. Say so and stop.") },
 };
 
@@ -92,6 +94,22 @@ function asciiQuotes<T>(v: T): T {
   return v;
 }
 
+// Every real send lands in outbound_log with HighLevel's messageId so delivery_check can follow it up.
+const STOP_RE = /^\s*(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT)\b/i;
+async function logSend(db: ReturnType<typeof admin>, loc: string, jobId: string, a: SendArgs, template: string | null, hash: string, r: { text: string; isError: boolean }, redirected: boolean) {
+  let messageId: string | null = null;
+  try { const j = JSON.parse(r.text); messageId = j.messageId ?? j.id ?? null; } catch { /* non-JSON */ }
+  await db.from("outbound_log").insert({
+    location_id: loc, job_id: jobId, contact_id: a.contactId, channel: a.type, template, text_hash: hash,
+    verdict: r.isError ? "error" : (redirected ? "redirected:shadow" : "sent"),
+    detail: r.isError ? r.text.slice(0, 300) : (redirected ? "shadow redirect to owner" : null),
+    message_id: r.isError ? null : messageId, from_number: (a.fromNumber as string | undefined) ?? null, delivery_status: r.isError ? null : "pending",
+  });
+}
+async function recordConsent(db: ReturnType<typeof admin>, loc: string, contactId: string, status: "opted_in" | "opted_out", source: string, evidence: string, jobId?: string, phone?: string) {
+  await db.from("consents").insert({ location_id: loc, contact_id: contactId, phone: phone ?? null, channel: "SMS", status, source, evidence: evidence.slice(0, 500), job_id: jobId ?? null });
+}
+
 // ---------- model ----------
 type Msg = { role: "user" | "assistant"; content: any };
 async function claude(system: string, messages: Msg[], tools: any[]) {
@@ -127,7 +145,15 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     const spec = KIND_SPEC[job.kind] ?? KIND_SPEC.custom;
     if (job.kind === "daily_brief") {
       const { data: pend } = await db.from("approvals").select("n, contact_name, template, text, created_at").eq("location_id", loc).eq("status", "pending").order("n");
-      job.payload = { ...(job.payload ?? {}), pending_approvals: (pend ?? []).map((a: any) => ({ n: a.n, who: a.contact_name, template: a.template, text: a.text.slice(0, 160), since: a.created_at })) };
+      const dayAgo = new Date(Date.now() - 864e5).toISOString();
+      const [{ data: a2p }, { count: failedSends }, { count: optOuts }, { data: tn }] = await Promise.all([
+        db.from("a2p_registrations").select("brand_status, campaign_status").eq("location_id", loc).maybeSingle(),
+        db.from("outbound_log").select("id", { count: "exact", head: true }).eq("location_id", loc).in("delivery_status", ["failed", "undelivered"]).gte("created_at", dayAgo),
+        db.from("consents").select("id", { count: "exact", head: true }).eq("location_id", loc).eq("status", "opted_out").gte("created_at", dayAgo),
+        db.from("tenants").select("settings").eq("location_id", loc).maybeSingle(),
+      ]);
+      const compliance = `A2P brand=${a2p?.brand_status ?? "not_started"} campaign=${a2p?.campaign_status ?? "not_started"}; last 24h: ${failedSends ?? 0} failed sends, ${optOuts ?? 0} opt-outs${tn?.settings?.sms_paused ? `; SMS PAUSED (${tn.settings.sms_paused.reason})` : ""}`;
+      job.payload = { ...(job.payload ?? {}), pending_approvals: (pend ?? []).map((a: any) => ({ n: a.n, who: a.contact_name, template: a.template, text: a.text.slice(0, 160), since: a.created_at })), compliance };
     }
     const { data: tenant } = await db.from("tenants").select("settings").eq("location_id", loc).maybeSingle();
     const settings = tenant?.settings ?? {};
@@ -194,12 +220,13 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     // Intake: the webhook rarely carries the inbound text (missed-call text-backs and golden-test leads put it in an
     // INBOUND: note). Fetch it deterministically so classification never depends on the model remembering to look.
     let inbound = typeof job.payload?.message === "string" ? job.payload.message.trim() : "";
+    let inboundVia: "payload" | "note" | "sms" | "" = inbound ? "payload" : "";
     if (job.kind === "intake" && job.payload?.contact_id) {
       try {
         const notesRaw = await callTool(loc, "contacts_get-notes", { contactId: job.payload.contact_id });
         const notes: any[] = JSON.parse(notesRaw.text).notes ?? [];
         const inboundNotes = notes.filter((n) => /^\s*INBOUND:/i.test(n.body ?? "")).sort((a, b) => String(b.dateAdded).localeCompare(String(a.dateAdded)));
-        if (!inbound && inboundNotes[0]) inbound = String(inboundNotes[0].body).replace(/^\s*INBOUND:\s*/i, "").trim();
+        if (!inbound && inboundNotes[0]) { inbound = String(inboundNotes[0].body).replace(/^\s*INBOUND:\s*/i, "").trim(); inboundVia = "note"; }
         if (!inbound) {
           const convRaw = await callTool(loc, "conversations_search-conversation", { contactId: job.payload.contact_id, limit: 1 });
           const conv = (JSON.parse(convRaw.text).conversations ?? [])[0];
@@ -207,12 +234,48 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
             const msgsRaw = await callTool(loc, "conversations_get-messages", { conversationId: conv.id, limit: 10 });
             const msgs: any[] = JSON.parse(msgsRaw.text).messages?.messages ?? JSON.parse(msgsRaw.text).messages ?? [];
             const lastIn = msgs.find((m) => m.direction === "inbound" && m.body);
-            if (lastIn) inbound = String(lastIn.body).trim();
+            if (lastIn) { inbound = String(lastIn.body).trim(); inboundVia = lastIn.messageType === "TYPE_SMS" || /sms/i.test(String(lastIn.messageType ?? "")) ? "sms" : "payload"; }
           }
         }
-        log({ tool: "inbound_lookup", ok: true, ms: Date.now() - t0, result_excerpt: inbound ? inbound.slice(0, 200) : "(no inbound text found)" });
+        log({ tool: "inbound_lookup", ok: true, ms: Date.now() - t0, result_excerpt: inbound ? `[${inboundVia}] ` + inbound.slice(0, 200) : "(no inbound text found)" });
       } catch (e) { log({ tool: "inbound_lookup", ok: false, ms: Date.now() - t0, result_excerpt: String(e).slice(0, 200) }); }
       gctx.inboundText = inbound || undefined;
+
+      // Compliance, in code: an opt-out keyword ends the job before the model sees it; otherwise the way the lead
+      // reached us is the consent record the gate will require before any live SMS.
+      const p = job.payload ?? {};
+      const src = String(p.source ?? p.lead_source ?? p.contact_source ?? p.contact?.source ?? "").toLowerCase();
+      if (inbound && STOP_RE.test(inbound)) {
+        await recordConsent(db, loc, p.contact_id, "opted_out", "stop_keyword", inbound, job.id);
+        await callTool(loc, "contacts_add-tags", { contactId: p.contact_id, tags: ["do-not-contact"] });
+        await callTool(loc, "contacts_update-contact", { contactId: p.contact_id, fields: { dnd: true } });
+        log({ tool: "optout", ok: true, result_excerpt: "STOP keyword — consent opted_out, do-not-contact tag, DND on" });
+        await finish(db, job, run.id, "succeeded", steps, inTok, outTok, "Opt-out keyword received — recorded, tagged do-not-contact, DND on. No draft.", null);
+        return;
+      }
+      const consentSource = inboundVia === "sms" || /sms|text|mctb|conversation/.test(src) ? "inbound_sms"
+        : /form|web|site|landing/.test(src) ? "web_form"
+        : /missed|call|phone|voicemail/.test(src) ? "missed_call" : null;
+      if (consentSource) {
+        await recordConsent(db, loc, p.contact_id, "opted_in", consentSource, inbound || `source=${src}`, job.id, p.phone ?? p.contact?.phone);
+        log({ tool: "consent", ok: true, result_excerpt: `opted_in via ${consentSource}` });
+      } else log({ tool: "consent", ok: true, result_excerpt: `no consent recorded (source="${src}", inbound via ${inboundVia || "none"}) — live SMS to this lead will be blocked until they text in or the owner attests` });
+    }
+    if (job.kind === "delivery_check") {
+      const summary = await deliveryCheck(db, loc, job, settings, gctx, log);
+      await finish(db, job, run.id, "succeeded", steps, inTok, outTok, summary, null);
+      return;
+    }
+    if (job.kind === "optout") {
+      const p = job.payload ?? {};
+      const cid = p.contact_id ?? p.contactId ?? p.contact?.id;
+      if (!cid) { await finish(db, job, run.id, "blocked", steps, inTok, outTok, "optout: no contact_id in payload", null); return; }
+      await recordConsent(db, loc, cid, "opted_out", "stop_keyword", String(p.message ?? p.body ?? "STOP"), job.id, p.phone);
+      await callTool(loc, "contacts_add-tags", { contactId: cid, tags: ["do-not-contact"] });
+      await callTool(loc, "contacts_update-contact", { contactId: cid, fields: { dnd: true } });
+      await db.from("approvals").update({ status: "blocked", decided_at: new Date().toISOString(), detail: "contact opted out" }).eq("location_id", loc).eq("contact_id", cid).eq("status", "pending");
+      await finish(db, job, run.id, "succeeded", steps, inTok, outTok, `opt-out recorded for ${cid}; pending drafts closed`, null);
+      return;
     }
     // approval_reply is pure code: the owner's text is a command over numbered drafts we recorded ourselves.
     if (job.kind === "approval_reply") {
@@ -254,7 +317,7 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
             const { template, approval, booked_event_id, ...fwd } = v.args;
             const r = await callTool(loc, SEND, fwd);
             text = r.text; isError = r.isError;
-            await db.from("outbound_log").insert({ location_id: loc, job_id: job.id, contact_id: v.args.contactId, channel: v.args.type, template: template ?? null, text_hash: h, verdict: r.isError ? "error" : (v.redirected ? "redirected:shadow" : "sent"), detail: r.isError ? r.text.slice(0, 300) : (v.redirected ? "shadow redirect to owner" : null) });
+            await logSend(db, loc, job.id, v.args, template ?? null, h, r, !!v.redirected);
           }
         } else {
           try {
@@ -356,7 +419,7 @@ async function recordDrafts(db: ReturnType<typeof admin>, loc: string, job: any,
       const ping = `Draft #${n} for ${contactName || "new lead"} (${d.template}): "${d.text}"\nReply APPROVE ${n} / NO ${n} / EDIT ${n} <new text>`;
       const v = await gate(gctx, { type: "SMS", contactId: owner, message: ping, template: "OWNER-PING" });
       if (!v.ok) log({ tool: "conversations_send-a-new-message", ok: false, args: { to: "owner", n, message: ping.slice(0, 120) }, result_excerpt: `BLOCKED ${v.check}: ${v.reason}` });
-      else { const { template, approval, booked_event_id, ...fwd } = v.args; const r = await callTool(loc, "conversations_send-a-new-message", fwd); log({ tool: "conversations_send-a-new-message", ok: !r.isError, args: { to: "owner", n, message: ping.slice(0, 120) }, result_excerpt: r.text.slice(0, 120) }); }
+      else { const { template, approval, booked_event_id, ...fwd } = v.args; const r = await callTool(loc, "conversations_send-a-new-message", fwd); await logSend(db, loc, job.id, v.args, "OWNER-PING", await sha(`${owner}|OWNER-PING|${ping}`), r, false); log({ tool: "conversations_send-a-new-message", ok: !r.isError, args: { to: "owner", n, message: ping.slice(0, 120) }, result_excerpt: r.text.slice(0, 120) }); }
     }
   }
 }
@@ -374,6 +437,7 @@ async function approvalReply(db: ReturnType<typeof admin>, loc: string, job: any
     if (!v.ok) { log({ tool: SEND, ok: false, args: { to: "owner", message: msg.slice(0, 120) }, result_excerpt: `BLOCKED ${v.check}: ${v.reason}` }); return; }
     const { template, approval, booked_event_id, ...fwd } = v.args;
     const r = await callTool(loc, SEND, fwd);
+    await logSend(db, loc, job.id, v.args, "OWNER-REPLY", await sha(`${owner}|OWNER-REPLY|${msg}`), r, false);
     log({ tool: SEND, ok: !r.isError, args: { to: "owner", message: msg.slice(0, 120) }, result_excerpt: r.text.slice(0, 120) });
   };
   const completeTask = async (a: any, note: string) => {
@@ -417,7 +481,7 @@ async function approvalReply(db: ReturnType<typeof admin>, loc: string, job: any
     }
     const { template, approval, booked_event_id, ...fwd } = v.args;
     const r = await callTool(loc, SEND, fwd);
-    await db.from("outbound_log").insert({ location_id: loc, job_id: job.id, contact_id: v.args.contactId, channel: a.channel, template: a.template, text_hash: h, verdict: r.isError ? "error" : (v.redirected ? "redirected:shadow" : "sent"), detail: r.isError ? r.text.slice(0, 300) : (v.redirected ? "shadow redirect to owner" : null) });
+    await logSend(db, loc, job.id, v.args, a.template, h, r, !!v.redirected);
     log({ tool: SEND, ok: !r.isError, args: { n, contactId: a.contact_id, message: msg.slice(0, 120) }, result_excerpt: r.text.slice(0, 120) });
     if (r.isError) { results.push(`#${n}: send error`); continue; }
     await db.from("approvals").update({ status: "sent", decided_at: new Date().toISOString(), decided_job_id: job.id, text: msg, detail: action === "edit" ? "edited by owner" : null }).eq("id", a.id);
@@ -469,7 +533,7 @@ async function welcome(db: ReturnType<typeof admin>, loc: string, job: any, cv: 
     }
     const { template: _t, approval: _a, booked_event_id: _b, ...fwd } = vd.args;
     const r = await callTool(loc, SEND, fwd);
-    await db.from("outbound_log").insert({ location_id: loc, job_id: job.id, contact_id: owner, channel: String(args.type ?? "SMS"), template, text_hash: h, verdict: r.isError ? "error" : "sent", detail: r.isError ? r.text.slice(0, 300) : null });
+    await logSend(db, loc, job.id, vd.args, template, h, r, false);
     log({ tool: SEND, ok: !r.isError, args: { template, to: "owner", chars: text.length }, result_excerpt: r.text.slice(0, 120) });
     results.push(`${template}: ${r.isError ? "send error" : "sent"}`); return !r.isError;
   };
@@ -495,6 +559,50 @@ async function welcome(db: ReturnType<typeof admin>, loc: string, job: any, cv: 
   await callTool(loc, "contacts_create-note", { contactId: owner, body: `WELCOME step ${step} | ${new Date().toISOString()} | ${line}` }).catch(() => null);
   await db.from("tenant_events").insert({ location_id: loc, event: `welcome:${step}`, detail: { results, mode } });
   return { summary: `welcome step ${step}: ${line}`, blocked: !results.some((r) => r.endsWith(": sent")) };
+}
+
+// Delivery monitor: follow up every send with HighLevel's message status; auto-pause SMS on a carrier block pattern.
+const CARRIER_ERR = /30007|30008|30034|carrier|spam|filtered|blocked|unregistered|10dlc|a2p/i;
+async function deliveryCheck(db: ReturnType<typeof admin>, loc: string, job: any, settings: Record<string, any>, gctx: GateCtx, log: (s: any) => void): Promise<string> {
+  const since = new Date(Date.now() - 48 * 3600e3).toISOString();
+  const { data: rows } = await db.from("outbound_log").select("id, message_id, contact_id, channel").eq("location_id", loc).eq("verdict", "sent").not("message_id", "is", null).gte("created_at", since).or("delivery_status.is.null,delivery_status.in.(pending,sent)").limit(100);
+  let checked = 0, delivered = 0, failed = 0, optouts = 0;
+  const errors: string[] = [];
+  for (const row of rows ?? []) {
+    const r = await callTool(loc, "hl_request", { method: "GET", path: `/conversations/messages/${row.message_id}` });
+    checked++;
+    if (r.isError) { log({ tool: "delivery_check", ok: false, args: { id: row.id }, result_excerpt: r.text.slice(0, 120) }); continue; }
+    let m: any = {}; try { m = JSON.parse(r.text); m = m.message ?? m; } catch { /* keep */ }
+    const status = String(m.status ?? "pending").toLowerCase();
+    const err = m.error ? String(m.error).slice(0, 300) : null;
+    await db.from("outbound_log").update({ delivery_status: status, delivery_error: err, checked_at: new Date().toISOString() }).eq("id", row.id);
+    if (status === "delivered" || status === "read") delivered++;
+    if (status === "failed" || status === "undelivered") { failed++; if (err) errors.push(err); }
+    if (status === "opt_out") { optouts++; await recordConsent(db, loc, row.contact_id, "opted_out", "hl_dnd", `message ${row.message_id} status opt_out`, job.id); await callTool(loc, "contacts_add-tags", { contactId: row.contact_id, tags: ["do-not-contact"] }); }
+  }
+  // Carrier-block rule over the trailing hour of SMS: ≥3 failures and ≥50% failure rate, or ≥2 failures with a carrier/spam error text.
+  const hourAgo = new Date(Date.now() - 3600e3).toISOString();
+  const { data: recent } = await db.from("outbound_log").select("delivery_status, delivery_error").eq("location_id", loc).eq("verdict", "sent").eq("channel", "SMS").gte("created_at", hourAgo).not("delivery_status", "is", null);
+  const sms = recent ?? [];
+  const f = sms.filter((x: any) => x.delivery_status === "failed" || x.delivery_status === "undelivered");
+  const carrierHits = f.filter((x: any) => CARRIER_ERR.test(String(x.delivery_error ?? ""))).length;
+  const block = (f.length >= 3 && f.length / Math.max(1, sms.length) >= 0.5) || carrierHits >= 2;
+  let paused = "";
+  if (block && !settings.sms_paused) {
+    const reason = `carrier block pattern: ${f.length}/${sms.length} SMS failed in the last hour${carrierHits ? ` (${carrierHits} carrier/spam errors)` : ""}`;
+    const newSettings = { ...settings, sms_paused: { at: new Date().toISOString(), reason } };
+    await db.from("tenants").update({ settings: newSettings }).eq("location_id", loc);
+    await db.from("tenant_events").insert({ location_id: loc, event: "carrier_block", detail: { reason, errors: errors.slice(0, 5) } });
+    const owner = settings.owner_contact_id as string | undefined;
+    if (owner) {
+      await callTool(loc, "contacts_create-note", { contactId: owner, body: `SMS PAUSED | ${new Date().toISOString()} | ${reason}. Texting to homeowners is paused until Ty resumes it (dispatch_sms-resume).` });
+      const v = await gate(gctx, { type: "Email", contactId: owner, subject: "Dispatch paused texting — carrier block", html: `Dispatch stopped sending texts to homeowners: ${reason}.<br><br>Nothing is lost — drafts keep queuing for your approval. Ty is checking the number/A2P registration and will resume texting.<br><br>— Dispatch`, template: "OWNER-ALERT" });
+      if (v.ok) { const { template: _t, approval: _a, booked_event_id: _b, ...fwd } = v.args; const r = await callTool(loc, "conversations_send-a-new-message", fwd); await logSend(db, loc, job.id, v.args, "OWNER-ALERT", await sha(`${owner}|OWNER-ALERT|${reason}`), r, false); }
+    }
+    paused = ` — SMS PAUSED (${reason})`;
+    log({ tool: "carrier_block", ok: false, result_excerpt: reason });
+  }
+  return `delivery_check: ${checked} checked, ${delivered} delivered, ${failed} failed, ${optouts} opt-outs${paused}`;
 }
 
 // Put a job back in the queue for later without charging it an attempt (used when a precondition is not met yet).
