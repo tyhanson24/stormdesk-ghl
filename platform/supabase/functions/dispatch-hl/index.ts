@@ -50,9 +50,9 @@ const tools: Record<string, Tool> = {
   // contacts
   "contacts_get-contact": { description: "Get a contact by id.", input: { contactId: S("Contact id") }, required: ["contactId"], run: (c, a) => hl(c, "GET", `/contacts/${a.contactId}`) },
   "contacts_search": { description: "Search contacts in this sub-account. `query` is free text (name, phone, email); optional `filters` array uses HighLevel's search filter syntax.", input: { query: S("Free-text search"), filters: S("HighLevel filters array", "array"), limit: S("Max results (default 20)", "number"), page: S("Page", "number") }, run: (c, a) => hl(c, "POST", "/contacts/search", { locationId: c.loc, query: a.query, filters: a.filters, pageLimit: a.limit ?? 20, page: a.page ?? 1 }) },
-  "contacts_create-contact": { description: "Create a contact. Fields: firstName, lastName (or name), email, phone, address1, city, state, postalCode, tags[], customFields[{id|key,value}], source. Give at least one of firstName/lastName/name/email/phone.", input: { contact: S("Contact fields object", "object") }, required: ["contact"], run: (c, a) => hl(c, "POST", "/contacts/", cleanContact(a.contact, c.loc)) },
-  "contacts_upsert-contact": { description: "Upsert a contact by phone/email.", input: { contact: S("Contact fields object", "object") }, required: ["contact"], run: (c, a) => hl(c, "POST", "/contacts/upsert", cleanContact(a.contact, c.loc)) },
-  "contacts_update-contact": { description: "Update contact fields (firstName, lastName, email, phone, address, customFields[], tags[] …).", input: { contactId: S("Contact id"), fields: S("Fields to update", "object") }, required: ["contactId", "fields"], run: (c, a) => hl(c, "PUT", `/contacts/${a.contactId}`, a.fields) },
+  "contacts_create-contact": { description: "Create a contact. Fields: firstName, lastName (or name), email, phone, address1, city, state, postalCode, tags[], customFields[{id|key,value}], source. Give at least one of firstName/lastName/name/email/phone.", input: { contact: S("Contact fields object", "object") }, required: ["contact"], run: async (c, a) => hl(c, "POST", "/contacts/", await withFieldIds(c, cleanContact(a.contact, c.loc))) },
+  "contacts_upsert-contact": { description: "Upsert a contact by phone/email.", input: { contact: S("Contact fields object", "object") }, required: ["contact"], run: async (c, a) => hl(c, "POST", "/contacts/upsert", await withFieldIds(c, cleanContact(a.contact, c.loc))) },
+  "contacts_update-contact": { description: "Update contact fields (firstName, lastName, email, phone, address, customFields[{id|key,value}], tags[] …). customFields may use the field's name as key (e.g. urgency_score); it is resolved to the field id for you.", input: { contactId: S("Contact id"), fields: S("Fields to update", "object") }, required: ["contactId", "fields"], run: async (c, a) => hl(c, "PUT", `/contacts/${a.contactId}`, await withFieldIds(c, a.fields)) },
   "contacts_add-tags": { description: "Add tags to a contact.", input: { contactId: S("Contact id"), tags: S("Tags", "array") }, required: ["contactId", "tags"], run: (c, a) => hl(c, "POST", `/contacts/${a.contactId}/tags`, { tags: a.tags }) },
   "contacts_remove-tags": { description: "Remove tags from a contact.", input: { contactId: S("Contact id"), tags: S("Tags", "array") }, required: ["contactId", "tags"], run: (c, a) => hl(c, "DELETE", `/contacts/${a.contactId}/tags`, { tags: a.tags }) },
   "contacts_create-note": { description: "Add a note to a contact.", input: { contactId: S("Contact id"), body: S("Note text") }, required: ["contactId", "body"], run: (c, a) => hl(c, "POST", `/contacts/${a.contactId}/notes`, { body: a.body }) },
@@ -96,6 +96,37 @@ function cleanContact(input: any, loc: string) {
   delete c.id; delete c.contactId; delete c.locationId;
   if (Array.isArray(c.tags)) c.tags = c.tags.map((t: unknown) => String(t).toLowerCase());
   return { ...c, locationId: loc };
+}
+// HighLevel only reliably applies customFields by id. Models write {key:"contact.urgency_score"} / {key:"urgency_score"} /
+// {id:"urgency_score"}; resolve every entry to {id, field_value} using the location's field definitions (cached 10 min).
+const fieldCache = new Map<string, { at: number; byKey: Map<string, string>; ids: Set<string> }>();
+async function fieldMap(ctx: Ctx) {
+  const hit = fieldCache.get(ctx.loc);
+  if (hit && Date.now() - hit.at < 600_000) return hit;
+  const data: any = await hl(ctx, "GET", `/locations/${ctx.loc}/customFields`, undefined, { model: "contact" });
+  const byKey = new Map<string, string>(), ids = new Set<string>();
+  for (const f of data?.customFields ?? []) {
+    ids.add(f.id);
+    const fk = String(f.fieldKey ?? "");                       // "contact.urgency_score"
+    const bare = fk.replace(/^contact\./, "");
+    for (const k of [fk, bare, String(f.name ?? "").toLowerCase().replace(/\s+/g, "_")]) if (k) byKey.set(k.toLowerCase(), f.id);
+  }
+  const entry = { at: Date.now(), byKey, ids };
+  fieldCache.set(ctx.loc, entry);
+  return entry;
+}
+async function withFieldIds(ctx: Ctx, body: any) {
+  if (!body || !Array.isArray(body.customFields) || body.customFields.length === 0) return body;
+  const fm = await fieldMap(ctx);
+  const out: any[] = [];
+  for (const cf of body.customFields) {
+    if (!cf || typeof cf !== "object") continue;
+    const value = cf.field_value ?? cf.value;
+    let id: string | undefined = fm.ids.has(cf.id) ? cf.id : undefined;
+    if (!id) for (const cand of [cf.key, cf.id, cf.fieldKey, cf.name]) { const hit = cand && fm.byKey.get(String(cand).toLowerCase()); if (hit) { id = hit; break; } }
+    out.push(id ? { id, field_value: value } : cf);          // unknown field: pass through untouched so HL reports it
+  }
+  return { ...body, customFields: out };
 }
 const ms = (v: string | number) => (typeof v === "number" || /^\d+$/.test(String(v))) ? Number(v) : new Date(v).getTime();
 
