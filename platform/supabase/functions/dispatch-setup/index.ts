@@ -4,12 +4,12 @@
 //     company_name*  trade*  owner_first*  owner_last*  owner_phone*  owner_email
 //     phone  website  address1  city  state  postal_code  timezone (default America/Chicago)
 //     service_zips (array or comma string)  license_number  business_hours  google_profile  review_link
-//     auto_ack (bool; "auto-send 3 basic replies" → true)  storm_event
+//     auto_ack (bool; "auto-send 3 basic replies" → true)  storm_event  ein (digits; stored in tenant settings for the A2P packet)
 //     location_id   — reuse an existing sub-account instead of creating one (re-runs are idempotent)
 //     snapshot_id   — default SNAPSHOT_ID below;  company_id — default PIVOT agency
 //     dry_run (bool) — validate + plan only
 // Does, in order: create sub-account from snapshot (agency token) → wait for the snapshot to land → tenant row +
-// ingest key → owner contact → custom values (all 16, template keys never survive) → tenant_files → summary of
+// ingest key → owner contact → custom values (all 17, template keys never survive) → tenant_files → summary of
 // what is left for Ty (owner user, phone number + A2P, golden test, welcome).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { admin, env, json, HL_VERSION } from "../_shared/ghl.ts";
@@ -130,7 +130,7 @@ Deno.serve(async (req) => {
   const plan = {
     create_sub_account: !b.location_id,
     snapshot_id: b.snapshot_id ?? SNAPSHOT_ID,
-    custom_values: ["company_name", "owner_phone", "license_number", "local_address", "review_link", "storm_event", "bot_webhook_key", "bot_webhook_key_intake", "wh_intake", "wh_estimate", "wh_crew_done", "wh_approval", "bots_enabled", "mode", "trade", "wf02_id"],
+    custom_values: ["company_name", "owner_phone", "license_number", "local_address", "review_link", "storm_event", "bot_webhook_key", "bot_webhook_key_intake", "wh_intake", "wh_estimate", "wh_crew_done", "wh_approval", "wh_optout", "bots_enabled", "mode", "trade", "wf02_id"],
     mode: "test",
   };
   if (b.dry_run) return json(200, { dry_run: true, plan, files: Object.keys(files(b, "(owner)", "(new)")) });
@@ -179,6 +179,8 @@ Deno.serve(async (req) => {
     settings.company_name = String(b.company_name).trim();
     settings.auto_ack = b.auto_ack === true || /auto/i.test(String(b.auto_ack ?? ""));
     settings.owner_phone = e164(b.owner_phone);
+    if (b.ein) settings.ein = String(b.ein).replace(/\D/g, "");          // for the A2P packet only; never a custom value
+    if (b.owner_email) settings.owner_email = String(b.owner_email).trim();
 
     // 4. owner contact (upsert by phone), tagged owner
     const up = await hl(locToken, "POST", "/contacts/upsert", {
@@ -200,7 +202,7 @@ Deno.serve(async (req) => {
     if (terr) throw terr;
     log.push({ step: "tenant_settings", ok: true, detail: Object.keys(settings) });
 
-    // 6. custom values — every one of the 16 is overwritten; template keys/URLs must never survive
+    // 6. custom values — every one of the 17 is overwritten; template keys/URLs must never survive
     const address = [b.address1, b.city, [b.state, b.postal_code].filter(Boolean).join(" ")].filter(Boolean).join(", ");
     const want: Record<string, string> = {
       company_name: String(b.company_name).trim(),
@@ -215,6 +217,7 @@ Deno.serve(async (req) => {
       wh_estimate: `${base}/functions/v1/dispatch-ingest/appointment_completed`,
       wh_crew_done: `${base}/functions/v1/dispatch-ingest/crew_done`,
       wh_approval: `${base}/functions/v1/dispatch-ingest/approval_reply`,
+      wh_optout: `${base}/functions/v1/dispatch-ingest/optout`,
       bots_enabled: "true",
       mode: "test",
       trade: String(b.trade).toLowerCase(),
@@ -246,7 +249,7 @@ Deno.serve(async (req) => {
       settings.owner_user_id ? null : `Add ${b.owner_first} ${b.owner_last} as a user on sub-account ${loc} (HighLevel → Settings → Team), then re-run setup with location_id so owner_user_id is stored.`,
       `Buy a local number for ${loc} and submit A2P (Ty clicks submit).`,
       `Run golden-test on ${loc} (Office: "run golden-test on ${slug(want.company_name)}").`,
-      `On PASS: welcome text + email (needs your approval of the copy), then mode=shadow for 48 h, then storm/standard.`,
+      `On PASS the welcome is queued automatically; flip mode=shadow for 48 h, then storm/standard.`,
     ].filter(Boolean);
     return json(200, { ok: true, location_id: loc, owner_contact_id: ownerContactId, ingest_key: settings.ingest_key, wf02_id: wf02, mode: "test", log, remaining });
   } catch (e) {
