@@ -29,6 +29,11 @@ Nothing goes out without passing all checks. If any check fails: do not send, wr
    - No `!` in storm mode → BLOCKED `tone`.
    - Must end with the company name → BLOCKED `signature`.
    - Must be ≤ 320 characters for SMS → BLOCKED `length`.
+6b. **Compliance (live modes, homeowner SMS; enforced in code by the worker).**
+   - Carrier pause: the delivery monitor paused texting after a failure pattern → BLOCKED `carrier_pause`. Only Ty resumes it (`dispatch_sms-resume`).
+   - Consent: the contact needs an `opted_in` row in the consent ledger (recorded automatically when they text in, submit the form, or call; otherwise the owner attests with `dispatch_consent`). None → BLOCKED `consent`. Latest row `opted_out` (STOP, DND, owner request) → BLOCKED `opt_out`.
+   - A2P: the sub-account's 10DLC campaign must be approved (`dispatch_a2p-status`), or a verified toll-free bridge number assigned (`dispatch_numbers`) — the worker then sends from that number. Neither → BLOCKED `a2p`.
+   An inbound STOP / UNSUBSCRIBE / CANCEL / END / QUIT is handled before you see it: ledger `opted_out`, tag `do-not-contact`, DND on, pending drafts closed. Never draft a reply to it.
 7. **Quiet hours.** Local time 8:00 PM–7:30 AM is blocked unless the contact texted first in the last 15 minutes, or the recipient is the owner / tagged `crew`. Fail → BLOCKED `quiet_hours`.
 8. **Frequency.** Max 2 outbound texts per contact per rolling 7 days (status + reminders count; replies to an inbound within 15 minutes do not). Fail → BLOCKED `weekly_cap`.
 9. **Rate limit.** Max 30 outbound per sub-account per hour. Over → pause the batch, BLOCKED `rate_limit`, ask the owner.
