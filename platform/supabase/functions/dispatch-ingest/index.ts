@@ -20,13 +20,20 @@ Deno.serve(async (req) => {
   if (!KINDS.has(kind)) return json(404, { error: "unknown kind", kind });
 
   const key = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "") || req.headers.get("x-dispatch-key") || "";
-  const body = await req.json().catch(() => null);
-  if (!body || typeof body !== "object") return json(400, { error: "JSON body required" });
+  // GHL's Webhook action posts JSON, but be forgiving: form-encoded bodies and GHL's native envelope both work.
+  const rawText = await req.text();
+  let body: any = null;
+  try { body = JSON.parse(rawText); } catch {
+    try { body = Object.fromEntries(new URLSearchParams(rawText)); } catch { /* ignore */ }
+  }
+  if (!body || typeof body !== "object") { console.error("ingest: unparseable body", rawText.slice(0, 300)); return json(400, { error: "JSON body required" }); }
+  // GHL often nests custom data under customData and the sub-account under location.id.
+  if (body.customData && typeof body.customData === "object") body = { ...body, ...body.customData };
 
   // Resolve the sub-account.
-  let locationId: string | null = body.location_id ?? body.locationId ?? null;
+  let locationId: string | null = body.location_id ?? body.locationId ?? body?.location?.id ?? null;
   if (!locationId && typeof body.link === "string") locationId = body.link.match(/\/location\/([A-Za-z0-9]+)\//)?.[1] ?? null;
-  if (!locationId) return json(400, { error: "location_id missing (add \"location_id\":\"{{location.id}}\" to the webhook body)" });
+  if (!locationId) { console.error("ingest: no location id", Object.keys(body).join(",")); return json(400, { error: "location_id missing (add \"location_id\":\"{{location.id}}\" to the webhook body)", keys: Object.keys(body) }); }
 
   const db = admin();
   const { data: tenant } = await db.from("tenants").select("id, status, settings").eq("location_id", locationId).maybeSingle();
