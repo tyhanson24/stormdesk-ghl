@@ -35,6 +35,14 @@ pg_cron (every minute) ───POST──▶ dispatch-worker ◀─────
 - Template tenant seeded: `tenants.settings` (timezone, owner_contact_id, trade) and `tenant_files` (company-profile, service-area, pricing-guardrails, do-not-contact).
 - First real runs (mode=test, Dispatch template): W1 emergency lead → Emergency/urgency 95, tags, opportunity in Storm Response › New Lead, DRAFT ACK-1 note, approval task, owner note, BLOCKED test_mode note, nothing sent (102 s, 19 tool calls). W2 minor lead → Minor/urgency 30, ASK-PHOTOS draft, approval task (52 s, 12 calls, ~$0.14 with prompt caching). Both in `job_runs`.
 - Prompt caching on system + tools (~6× cheaper per job). `tenants.settings.owner_user_id` feeds task assignedTo (HighLevel requires it).
+- **WF-02 cut over to the worker on the template** (`wh_intake` → `dispatch-ingest/intake`, `bot_webhook_key_intake` = tenant ingest key; previous Cursor values logged in `tenant_events` `cutover:wh_intake`). Ingest accepts GHL's native webhook envelope (`location.id`, `customData`, form-encoded).
+- Golden test (R15, Office grades; worker runs intake) iterated runs 4 → 9. Every miss was made deterministic rather than re-prompted:
+  - worker fetches the inbound text itself (`INBOUND:` note → last inbound message) and feeds it verbatim with the address;
+  - gateway `cleanContact` (create/upsert) and `withFieldIds` (customFields `key`/name → field id; HighLevel silently ignores `contact.*` keys);
+  - worker enforces after every intake: tags `storm-lead` + `bot-drafted`, `lead_source` (webhook source), `storm_event` (custom value), `next_followup_date` = tomorrow when an ASK-* draft was written; ASCII-normalizes quotes in everything sent to HighLevel;
+  - storm-intake skill now states the tag rules, "{street} = full line incl. house number", and Qualified only with photos;
+  - tool-call transport errors are retried once and returned to the model as errors (not job failures); retry backoff 30 s → 2 m → 8 m → 32 m → 60 m; auto-send list is stated in the prompt (draft-only otherwise).
+  - Typical intake: 60–80 s, ~30–60k billed-equivalent input tokens, 0 sends in test mode.
 
 ## Rollout
 1. Deploy; `mode=test` on the Dispatch template; point `wh_intake` at ingest; fire a golden lead; read `job_runs`.
