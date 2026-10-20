@@ -34,6 +34,7 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
    - `emergency` + `{pack.emergency_tag}` when severity is Emergency;
    - `out-of-area` per step 4; `storm-chaser-risk` when door-knockers are mentioned.
    Then log.
+11. Notes you may create on the lead: exactly one `DRAFT:` note per reply, plus any `BLOCKED:` note the send-gate requires. No summary / "intake processed" / "EMERGENCY INTAKE" notes — that reasoning belongs in your run log (SUMMARY), not on the contact.
 
 ## Templates (adapt to company voice; never add price)
 
