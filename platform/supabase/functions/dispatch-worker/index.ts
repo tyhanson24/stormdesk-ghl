@@ -43,8 +43,19 @@ const KIND_SPEC: Record<string, { skills: string[]; task: (p: any) => string }> 
   crew_done: { skills: ["permits-inspections"], task: (p) => `Job marked done for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Per permits-inspections: request inspection, draft the homeowner window text as a DRAFT note + approval task. Send nothing to the homeowner.` },
   daily_brief: { skills: ["daily-brief"], task: (p) => `Produce the daily brief per daily-brief. Deliver it to the owner's contact record (SMS + email) through the gate. Pending approvals (use these exact numbers in the APPROVE n lines): ${JSON.stringify(p.pending_approvals ?? [])}` },
   health_check: { skills: ["health-check"], task: () => `Run health-check. Write bot_last_health. Report hard failures.` },
+  welcome: { skills: [], task: () => "(code-only: owner welcome sequence)" },
   custom: { skills: [], task: (p) => String(p.instruction ?? "No instruction given. Say so and stop.") },
 };
+
+// ---------- owner welcome copy (config/welcome-copy.md, approved by Ty 2026-10-20) ----------
+const WELCOME = {
+  w1: (v: Record<string, string>) => `${v.first}, this is Dispatch for ${v.company}. I'm the texting assistant on ${v.number}.\nHere's how I work: every reply to a homeowner is a DRAFT until you say so. I'll text you "Draft #n for <name>" — reply APPROVE n, NO n, or EDIT n <your words>. APPROVE ALL clears the list.\nEvery morning at ${v.brief_time} you get a one-screen brief. Text STOP BOTS any time to pause me, START BOTS to resume.\nNothing goes to a customer without you. — Dispatch`,
+  w2subject: (v: Record<string, string>) => `${v.company} × Dispatch — you're set up`,
+  w2: (v: Record<string, string>) => `${v.first},\n\nDispatch is live on ${v.company}'s HighLevel account in test mode. What that means today:\n\nWHAT I DO\n• New lead comes in (missed call, web form, text) → within about a minute the lead is in your pipeline with address, damage type, severity and an urgency score, and I've drafted the first reply.\n• You get a text: "Draft #n for <name>: <message>". Reply APPROVE n / NO n / EDIT n <new text>. APPROVE ALL sends every pending draft.\n• ${v.brief_time} every morning: a one-screen brief — new leads, what's waiting on you, what I blocked and why.\n\nWHAT I NEVER DO\n• Send a homeowner anything you haven't approved (unless you turn on auto-send for the three basic replies).\n• Quote a price, promise a date, or text between 8 PM and 7:30 AM.\n• Text anyone on your do-not-contact list, or anyone who opted out.\n\nKILL SWITCH\nText STOP BOTS to the Dispatch number and I stop instantly. START BOTS resumes.\n\nNEXT STEPS\n1. Save the Dispatch number ${v.number} in your phone as "Dispatch".\n2. Reply to this email with any crew phone numbers you want alerted on emergencies.\n3. For the next 48 hours I'm in shadow mode: every message I would have sent goes to YOU instead, so you can see exactly what customers would get. After that, Ty flips you live.\n\nQuestions: reply here or text Ty.\n\n— Dispatch, for ${v.company}`,
+  w3: (v: Record<string, string>) => `${v.first} — 3-day check-in from Dispatch. Since go-live: ${v.leads_count} leads, ${v.approved_count} replies you approved, ${v.blocked_count} I held back. Anything you want worded differently? Reply here and Ty will adjust. — Dispatch`,
+};
+const WELCOME_DEFER_MS = 30 * 60_000;      // re-check mode every 30 min while the account is still in test
+const WELCOME_MAX_DEFERS = 14 * 48;        // give up after 14 days
 
 // ---------- gateway (our MCP) ----------
 async function mcp(loc: string, method: string, params: unknown) {
@@ -171,6 +182,14 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       getContact: async (id) => { const r = await callTool(loc, "contacts_get-contact", { contactId: id }); return JSON.parse(r.text); },
       dncList: dnc,
     };
+
+    // welcome is pure code: fixed owner-only copy, held while mode=test, step 3 self-scheduled.
+    if (job.kind === "welcome") {
+      const w = await welcome(db, loc, job, cv, settings, gctx, log);
+      if (w.defer) { await defer(db, job, run.id, steps, w.summary, WELCOME_DEFER_MS); return; }
+      await finish(db, job, run.id, w.blocked ? "blocked" : "succeeded", steps, inTok, outTok, w.summary, null);
+      return;
+    }
 
     // Intake: the webhook rarely carries the inbound text (missed-call text-backs and golden-test leads put it in an
     // INBOUND: note). Fetch it deterministically so classification never depends on the model remembering to look.
@@ -316,13 +335,14 @@ async function recordDrafts(db: ReturnType<typeof admin>, loc: string, job: any,
     if (dup) continue;
     await db.from("approvals").update({ status: "superseded", decided_at: new Date().toISOString(), detail: "newer draft for same contact" }).eq("location_id", loc).eq("contact_id", d.contactId).eq("status", "pending");
     const task = tasks.find((t) => t.contactId === d.contactId);
-    let contactName = "";
-    try { const c = JSON.parse((await callTool(loc, "contacts_get-contact", { contactId: d.contactId })).text).contact; contactName = `${c?.firstName ?? ""} ${c?.lastName ?? ""}`.trim(); } catch { /* optional */ }
+    let contactName = "", golden = false;
+    try { const c = JSON.parse((await callTool(loc, "contacts_get-contact", { contactId: d.contactId })).text).contact; contactName = `${c?.firstName ?? ""} ${c?.lastName ?? ""}`.trim(); golden = (c?.tags ?? []).map((t: string) => String(t).toLowerCase()).includes("golden-test"); } catch { /* optional */ }
     let n = 0;
     for (let i = 0; i < 5 && !n; i++) {
       const { data: mx } = await db.from("approvals").select("n").eq("location_id", loc).order("n", { ascending: false }).limit(1).maybeSingle();
       const cand = (mx?.n ?? 0) + 1;
-      const { error } = await db.from("approvals").insert({ location_id: loc, n: cand, contact_id: d.contactId, contact_name: contactName, task_id: task?.taskId ?? null, note_id: d.noteId ?? null, template: d.template, channel: d.channel, text: d.text, job_id: job.id });
+      // Golden-test leads get a number (the grader checks the task title) but never sit in the owner's pending list or brief.
+      const { error } = await db.from("approvals").insert({ location_id: loc, n: cand, contact_id: d.contactId, contact_name: contactName, task_id: task?.taskId ?? null, note_id: d.noteId ?? null, template: d.template, channel: d.channel, text: d.text, job_id: job.id, ...(golden ? { status: "superseded", decided_at: new Date().toISOString(), detail: "golden-test lead" } : {}) });
       if (!error) n = cand; else if ((error as any).code !== "23505") throw error;
     }
     if (task?.taskId) {
@@ -332,7 +352,7 @@ async function recordDrafts(db: ReturnType<typeof admin>, loc: string, job: any,
     } else log({ tool: "approval_recorded", ok: true, args: { n, template: d.template, contact: d.contactId, task: null } });
     // Ping the owner (gate decides: test mode blocks, shadow/live sends to the owner's own record).
     const owner = settings.owner_contact_id as string | undefined;
-    if (owner && n) {
+    if (owner && n && !golden) {
       const ping = `Draft #${n} for ${contactName || "new lead"} (${d.template}): "${d.text}"\nReply APPROVE ${n} / NO ${n} / EDIT ${n} <new text>`;
       const v = await gate(gctx, { type: "SMS", contactId: owner, message: ping, template: "OWNER-PING" });
       if (!v.ok) log({ tool: "conversations_send-a-new-message", ok: false, args: { to: "owner", n, message: ping.slice(0, 120) }, result_excerpt: `BLOCKED ${v.check}: ${v.reason}` });
@@ -408,6 +428,79 @@ async function approvalReply(db: ReturnType<typeof admin>, loc: string, job: any
   const line = results.join(" · ");
   await tellOwner(`${line} — Dispatch`);
   return `Owner replied "${text.slice(0, 40)}": ${line}`;
+}
+
+// Owner welcome sequence. Step 1 = W-1 SMS + W-2 email (then schedules step 3 for +3 days); step 3 = W-3 recap with real counts.
+// Never on the template; never while mode=test (deferred 30 min at a time, up to 14 days); owner-only, so the gate's
+// homeowner rules (price/date/length/quiet hours/weekly cap) do not apply but kill switch, DND and dedupe do.
+async function welcome(db: ReturnType<typeof admin>, loc: string, job: any, cv: Record<string, string>, settings: Record<string, any>, gctx: GateCtx, log: (s: any) => void): Promise<{ summary: string; defer?: boolean; blocked?: boolean }> {
+  const SEND = "conversations_send-a-new-message";
+  const p = job.payload ?? {};
+  const step = Number(p.step ?? 1) === 3 ? 3 : 1;
+  if (loc === TEMPLATE_LOCATION) return { summary: "welcome skipped: template sub-account never gets welcomes", blocked: true };
+  const owner = settings.owner_contact_id as string | undefined;
+  if (!owner) return { summary: "welcome blocked: owner_contact_id missing in tenant settings", blocked: true };
+  const mode = (cv.mode ?? "test").toLowerCase();
+  if (mode === "test") {
+    const d = Number(p.deferred ?? 0);
+    if (d >= WELCOME_MAX_DEFERS) return { summary: `welcome step ${step} abandoned: mode still test after 14 days`, blocked: true };
+    return { summary: `mode=test — welcome step ${step} waits for shadow/storm/standard (check ${d + 1})`, defer: true };
+  }
+
+  const c = await gctx.getContact(owner).catch(() => null);
+  const co = c?.contact ?? c ?? {};
+  const v: Record<string, string> = {
+    first: String(co.firstName ?? "").trim() || "Hi",
+    company: String(cv.company_name ?? settings.company_name ?? "").trim() || "your company",
+    number: String(settings.sms_number ?? "").trim() || "this number",
+    brief_time: String(settings.brief_time ?? "6:00 AM"),
+    leads_count: "0", approved_count: "0", blocked_count: "0",
+  };
+
+  const results: string[] = [];
+  const send = async (template: string, args: Partial<SendArgs>) => {
+    const text = String(args.message ?? args.html ?? "");
+    const vd = await gate(gctx, { type: "SMS", ...args, contactId: owner, template } as SendArgs);
+    const h = await sha(`${owner}|${template}|${text}`);
+    if (!vd.ok) {
+      await db.from("outbound_log").insert({ location_id: loc, job_id: job.id, contact_id: owner, channel: String(args.type ?? "SMS"), template, text_hash: h, verdict: `blocked:${vd.check}`, detail: vd.reason });
+      log({ tool: SEND, ok: false, args: { template, to: "owner" }, result_excerpt: `BLOCKED ${vd.check}: ${vd.reason}` });
+      results.push(`${template}: BLOCKED ${vd.check}`); return false;
+    }
+    const { template: _t, approval: _a, booked_event_id: _b, ...fwd } = vd.args;
+    const r = await callTool(loc, SEND, fwd);
+    await db.from("outbound_log").insert({ location_id: loc, job_id: job.id, contact_id: owner, channel: String(args.type ?? "SMS"), template, text_hash: h, verdict: r.isError ? "error" : "sent", detail: r.isError ? r.text.slice(0, 300) : null });
+    log({ tool: SEND, ok: !r.isError, args: { template, to: "owner", chars: text.length }, result_excerpt: r.text.slice(0, 120) });
+    results.push(`${template}: ${r.isError ? "send error" : "sent"}`); return !r.isError;
+  };
+
+  if (step === 1) {
+    await send("WELCOME-1", { type: "SMS", message: WELCOME.w1(v) });
+    const html = WELCOME.w2(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+    await send("WELCOME-2", { type: "Email", subject: WELCOME.w2subject(v), html });
+    const runAt = new Date(Date.now() + 3 * 864e5).toISOString();
+    const { error } = await db.from("jobs").insert({ location_id: loc, kind: "welcome", payload: { step: 3, since: new Date().toISOString(), source: "welcome-step-1" }, dedupe_key: `welcome3|${loc}`, priority: 100, run_after: runAt });
+    results.push(error ? (error.code === "23505" ? "W-3 already scheduled" : `W-3 schedule error: ${error.message}`) : `W-3 scheduled ${runAt.slice(0, 16)}Z`);
+  } else {
+    const since = typeof p.since === "string" ? p.since : new Date(Date.now() - 3 * 864e5).toISOString();
+    const [leads, approved, blocked] = await Promise.all([
+      db.from("jobs").select("id", { count: "exact", head: true }).eq("location_id", loc).eq("kind", "intake").gte("created_at", since),
+      db.from("approvals").select("id", { count: "exact", head: true }).eq("location_id", loc).eq("status", "sent").gte("created_at", since),
+      db.from("approvals").select("id", { count: "exact", head: true }).eq("location_id", loc).in("status", ["blocked", "declined"]).gte("created_at", since),
+    ]);
+    v.leads_count = String(leads.count ?? 0); v.approved_count = String(approved.count ?? 0); v.blocked_count = String(blocked.count ?? 0);
+    await send("WELCOME-3", { type: "SMS", message: WELCOME.w3(v) });
+  }
+  const line = results.join(" · ");
+  await callTool(loc, "contacts_create-note", { contactId: owner, body: `WELCOME step ${step} | ${new Date().toISOString()} | ${line}` }).catch(() => null);
+  await db.from("tenant_events").insert({ location_id: loc, event: `welcome:${step}`, detail: { results, mode } });
+  return { summary: `welcome step ${step}: ${line}`, blocked: !results.some((r) => r.endsWith(": sent")) };
+}
+
+// Put a job back in the queue for later without charging it an attempt (used when a precondition is not met yet).
+async function defer(db: ReturnType<typeof admin>, job: any, runId: number, steps: any[], summary: string, ms: number) {
+  await db.from("job_runs").update({ finished_at: new Date().toISOString(), status: "deferred", steps, summary }).eq("id", runId);
+  await db.from("jobs").update({ status: "queued", run_after: new Date(Date.now() + ms).toISOString(), attempts: Math.max(0, Number(job.attempts) - 1), payload: { ...(job.payload ?? {}), deferred: Number(job.payload?.deferred ?? 0) + 1 }, locked_at: null, locked_by: null }).eq("id", job.id);
 }
 
 async function finish(db: ReturnType<typeof admin>, job: any, runId: number, status: string, steps: any[], inTok: number, outTok: number, summary: string, error: string | null) {
