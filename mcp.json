@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "ghl": {
-      "url": "https://services.leadconnectorhq.com/mcp/",
+      "url": "https://jlkkvrvytvydkcahezob.supabase.co/functions/v1/dispatch-hl/mcp",
       "headers": {
-        "Authorization": "Bearer ${GHL_PIT}",
+        "Authorization": "Bearer ${DISPATCH_KEY}",
         "locationId": "${GHL_LOCATION_ID}"
       }
     }
