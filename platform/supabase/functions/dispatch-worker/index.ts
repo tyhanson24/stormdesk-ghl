@@ -23,7 +23,7 @@ async function repoFile(path: string): Promise<string> {
 }
 
 const KIND_SPEC: Record<string, { skills: string[]; task: (p: any) => string }> = {
-  intake: { skills: ["storm-intake"], task: (p) => `New lead webhook received. Run storm-intake on contact ${p.contact_id} using this payload: ${JSON.stringify(p)}. Draft the reply as a contact note (exact DRAFT format) + an approval task for the owner. If auto_ack covers ACK-1, send it through the gate.` },
+  intake: { skills: ["storm-intake"], task: (p) => `New lead webhook received. Run storm-intake on contact ${p.contact_id} using this payload: ${JSON.stringify(p)}. Draft the reply as a contact note (exact DRAFT format) + an approval task for the owner. Do NOT call conversations_send-a-new-message unless the template you drafted is explicitly listed in the auto-send flags given in the system prompt; the DRAFT note + approval task IS the deliverable otherwise.` },
   approval_reply: { skills: [], task: (p) => `Owner replied to an approval. Reply text: ${JSON.stringify(p.message ?? p.body ?? "")}. Owner contact: ${p.contact_id}. Find the matching open "Approve:" task(s) on the owner's tasks and the DRAFT notes they reference. APPROVE ALL / APPROVE n → send that draft exactly as written via conversations_send-a-new-message with template set to the draft's template id and approval set to "owner-reply"; tag bot-sent; mark the task complete; convert the DRAFT note to SENT. NO n → mark the task complete with the owner's note, do not send. EDIT n <text> → replace the draft text, re-run the gate, send. Anything else → leave tasks open and say so.` },
   appointment_completed: { skills: ["estimate-drafting"], task: (p) => `Appointment complete for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Draft the estimate from the appointment notes and photos per estimate-drafting. Stage for approval as a contact task. Send nothing.` },
   crew_done: { skills: ["permits-inspections"], task: (p) => `Job marked done for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Per permits-inspections: request inspection, draft the homeowner window text as a DRAFT note + approval task. Send nothing to the homeowner.` },
@@ -115,7 +115,7 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     const pack = trade ? await repoFile(`trades/${trade}.md`) : "";
 
     const system = [
-      `You are Dispatch, the operations agent for one home-service contractor's HighLevel sub-account (locationId ${loc}). You act ONLY through the tools provided. There is no filesystem: the company files you would read from /workspace are included below. Mode and flags come from the custom values already read: mode=${cv.mode ?? "?"}, bots_enabled=${cv.bots_enabled ?? "?"}, trade=${trade || "?"}, company_name=${cv.company_name ?? "?"}. Owner contact id: ${settings.owner_contact_id ?? "unknown (search by owner_phone custom value if needed)"}. Owner user id for task assignedTo (required by HighLevel): ${settings.owner_user_id ?? "unknown — call users_get-users once"}. Timezone: ${settings.timezone ?? "America/Chicago"}. Now: ${new Date().toISOString()}.`,
+      `You are Dispatch, the operations agent for one home-service contractor's HighLevel sub-account (locationId ${loc}). You act ONLY through the tools provided. There is no filesystem: the company files you would read from /workspace are included below. Mode and flags come from the custom values already read: mode=${cv.mode ?? "?"}, bots_enabled=${cv.bots_enabled ?? "?"}, trade=${trade || "?"}, company_name=${cv.company_name ?? "?"}. Owner contact id: ${settings.owner_contact_id ?? "unknown (search by owner_phone custom value if needed)"}. Owner user id for task assignedTo (required by HighLevel): ${settings.owner_user_id ?? "unknown — call users_get-users once"}. Timezone: ${settings.timezone ?? "America/Chicago"}. Now: ${new Date().toISOString()}. Auto-send flags (templates that may be sent without owner approval): ${JSON.stringify(Array.isArray(settings.auto) ? settings.auto : (settings.auto_ack ? ["ACK-1"] : []))} — anything else is draft-only.`,
       `Every send through conversations_send-a-new-message is checked by a code-level send gate before it reaches HighLevel; if it comes back BLOCKED, write the BLOCKED note as the send-gate skill says and move on — never retry with different wording or another channel. Pass "template" (template id) and, for approved drafts, "approval" on every send call.`,
       `Be economical: at most ${MAX_TOOL_CALLS} tool calls. When done, end with a final message whose last paragraph starts with "SUMMARY:" and has 3–8 lines: what you read, what you changed, what's waiting on approval, what blocked you.`,
       "\n# ghl-operating-rules\n" + rules, "\n# send-gate\n" + sendGate,
@@ -208,12 +208,21 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       messages.push({ role: "user", content: results });
     }
 
-    // Intake invariants the skill requires on every lead: `storm-lead` + `bot-drafted`. Enforce in code (idempotent) so a
-    // forgetful run can't drop them. Conditional tags (needs-photos, insurance, emergency…) stay with the model.
+    // Intake invariants the skill requires on every lead, enforced in code (idempotent) so a forgetful run can't drop them:
+    //   - tags `storm-lead` + `bot-drafted`
+    //   - when the draft asks the lead for something (ASK-* template), next_followup_date = tomorrow
+    // Conditional tags (needs-photos, insurance, emergency…) stay with the model.
     if (job.kind === "intake" && job.payload?.contact_id) {
       const ts = Date.now();
       const r = await callTool(loc, "contacts_add-tags", { contactId: job.payload.contact_id, tags: ["storm-lead", "bot-drafted"] });
       log({ tool: "contacts_add-tags", args: { enforced: true, tags: ["storm-lead", "bot-drafted"] }, ok: !r.isError, ms: Date.now() - ts, result_excerpt: r.text.slice(0, 200) });
+      const askedForInfo = steps.some((s) => /DRAFT:\s*ASK-/i.test(JSON.stringify(s.args ?? "")));
+      if (askedForInfo) {
+        const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+        const t2 = Date.now();
+        const r2 = await callTool(loc, "contacts_update-contact", { contactId: job.payload.contact_id, fields: { customFields: [{ key: "next_followup_date", value: tomorrow }] } });
+        log({ tool: "contacts_update-contact", args: { enforced: true, next_followup_date: tomorrow }, ok: !r2.isError, ms: Date.now() - t2, result_excerpt: r2.text.slice(0, 200) });
+      }
     }
 
     const summary = finalText.split("SUMMARY:").pop()?.trim().slice(0, 2000) || finalText.slice(-2000);
