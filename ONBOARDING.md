@@ -27,16 +27,16 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 
 ## The flow
 1. **Call (15 min).** Fill the intake form with the client on the phone, or send them the link. Submission creates a contact in PIVOT tagged `dispatch-onboarding` (WF-00 in PIVOT — to build).
-2. **Setup (2–3 min, Office, one tool call).** Say "set up <Company>" to Office. The `setup-customer` skill calls `dispatch_setup-customer` (gateway → `dispatch-setup` edge function), which: creates the sub-account from snapshot `iIvtMHToswxykXgyB0G8` with an agency token (or reuses `location_id`), waits for the snapshot, creates the tenant row + per-client ingest key, upserts the owner contact (tag `owner`), overwrites **all 16 custom values** (`wh_*` → `dispatch-ingest/<kind>`, `bot_webhook_key*` → ingest key, `wf02_id`, `mode=test`, `bots_enabled=true`, trade, company, owner phone, address, license, review link, storm event), writes company-profile / service-area / pricing-guardrails / do-not-contact into `tenant_files`, and returns the remaining-steps list. Idempotent: re-run with `location_id`.
+2. **Setup (2–3 min, Office, one tool call).** Say "set up <Company>" to Office. The `setup-customer` skill calls `dispatch_setup-customer` (gateway → `dispatch-setup` edge function), which: creates the sub-account from snapshot `iIvtMHToswxykXgyB0G8` with an agency token (or reuses `location_id`), waits for the snapshot, creates the tenant row + per-client ingest key, upserts the owner contact (tag `owner`), overwrites **all 17 custom values** (`wh_*` → `dispatch-ingest/<kind>` incl. `wh_optout`, `bot_webhook_key*` → ingest key, `wf02_id`, `mode=test`, `bots_enabled=true`, trade, company, owner phone, address, license, review link, storm event), writes company-profile / service-area / pricing-guardrails / do-not-contact into `tenant_files`, and returns the remaining-steps list. Idempotent: re-run with `location_id`.
    - Needs HighLevel to allow API sub-account creation (Agency Pro). If it refuses, create the sub-account from the snapshot in the UI and re-run with `location_id`.
    - The marketplace app auto-installs on the new sub-account; the gateway mints its token from the agency install.
 3. **Owner user (1 min, Ty).** Add the owner as a user on the sub-account (our app has `users.readonly` only). Re-run setup with `location_id` so `owner_user_id` is stored (tasks are assigned to it).
-4. **Number + A2P (10 min, Ty clicks submit).** Buy one local number; A2P packet from the trade pack + intake answers (generator still to build). Standard brand, Low Volume Mixed campaign.
+4. **Number + A2P (10 min, Ty clicks submit).** Buy one local number, register it (`dispatch_numbers` add/assign, purpose primary). Then "A2P packet for <Company>" → `dispatch_a2p-packet` builds every Trust Center field (Standard brand + Low Volume Mixed campaign, opt-in flow, 4 trade-specific sample messages, web-form consent text, policy links, checklist) from the sub-account + tenant settings (`ein`, `owner_email` from intake) + trade pack, saves `a2p-packet.md` / `sms-terms.html` / `privacy.html` to tenant files, and lists what is still `missing`. Ty pastes it into Settings → Phone Numbers → Trust Center and records progress with `dispatch_a2p-status`. Policy pages: `dispatch-public/sms-terms/<loc>` and `/privacy/<loc>` (plain text on supabase.co; put the .html files on the client's site for the styled version).
 5. **Golden test (Office, 8 min).** "run golden-test on <Company>" — the cloud worker runs intake; Office grades. Must PASS.
 6. **Welcome (automatic).** Golden PASS queues `dispatch_welcome`; the owner gets W-1 text + W-2 email the moment Ty flips `mode` to `shadow` (held while `test`), and the W-3 recap 3 days later. Copy: `config/welcome-copy.md` (approved).
 7. **Go-live.** A2P approved → `mode=shadow` 48 h → Ty flips `mode=storm` or `standard`.
 
-Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 post to `dispatch-ingest` and the cloud worker runs them (`platform/WORKER.md`).
+Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 / WF-12 post to `dispatch-ingest` and the cloud worker runs them (`platform/WORKER.md`).
 
 ## Guards
 - `health-check` fails hard if any custom value still equals the template's value (webhook keys, wf02_id) or contains REPLACE.
@@ -47,5 +47,5 @@ Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 post t
 ## Still to build
 - WF-00 (PIVOT): form submit → tag → notify Ty → webhook to Office "new client".
 - ~~`setup-customer` skill~~ — done (`skills/setup-customer`, `platform/supabase/functions/dispatch-setup`).
-- A2P packet generator (template in `config/a2p-template.md`).
+- ~~A2P packet generator~~ — done (`dispatch_a2p-packet`, `_shared/a2p.ts`, `dispatch-public`).
 - ~~Marketplace OAuth app~~ — done (platform/).
