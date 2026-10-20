@@ -13,13 +13,27 @@ const SKILLS_BASE = () => `https://raw.githubusercontent.com/tyhanson24/stormdes
 const MODEL = () => Deno.env.get("DISPATCH_MODEL") ?? "claude-sonnet-4-5";
 
 // ---------- skills (cached per isolate) ----------
-const skillCache = new Map<string, string>();
+const skillCache = new Map<string, { at: number; text: string }>();
+const SKILL_TTL_MS = 5 * 60_000;   // a skill push on main is live within 5 minutes without a redeploy
 async function repoFile(path: string): Promise<string> {
-  if (skillCache.has(path)) return skillCache.get(path)!;
+  const hit = skillCache.get(path);
+  if (hit && Date.now() - hit.at < SKILL_TTL_MS) return hit.text;
   const r = await fetch(`${SKILLS_BASE()}/${path}`);
-  const t = r.ok ? await r.text() : "";
-  if (r.ok) skillCache.set(path, t);
+  const t = r.ok ? await r.text() : (hit?.text ?? "");
+  if (r.ok) skillCache.set(path, { at: Date.now(), text: t });
   return t;
+}
+const TEMPLATE_LOCATION = "LTiwIPoSI1YNEcSyzYzf";
+// Hard guard (mirrors the health-check skill): a client sub-account still carrying template leftovers must not run.
+function setupProblems(loc: string, cv: Record<string, string>): string[] {
+  const base = env("PUBLIC_BASE_URL");
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(cv)) if (k !== "review_link" && /REPLACE/i.test(v)) out.push(`${k} still says REPLACE`);   // review_link is set at go-live, not intake-critical
+  for (const k of ["wh_intake", "wh_approval"]) if (cv[k] && !cv[k].startsWith(`${base}/functions/v1/dispatch-ingest/`)) out.push(`${k} does not point at dispatch-ingest`);
+  for (const k of ["bot_webhook_key", "bot_webhook_key_intake"]) if (cv[k] && !/^ik_[a-f0-9]{48}$/.test(cv[k])) out.push(`${k} is not a Dispatch ingest key`);
+  if (loc !== TEMPLATE_LOCATION && cv.wf02_id === "59c92c05-5fc0-4891-832c-bf3d991c4c6a") out.push("wf02_id is the template's");
+  if (loc !== TEMPLATE_LOCATION && /template/i.test(cv.company_name ?? "")) out.push("company_name is the template's");
+  return out;
 }
 
 const KIND_SPEC: Record<string, { skills: string[]; task: (p: any) => string }> = {
@@ -118,6 +132,12 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
 
     if ((cv.bots_enabled ?? "").toLowerCase() !== "true" && job.kind !== "health_check") {
       await finish(db, job, run.id, "blocked", steps, inTok, outTok, "bots_enabled is not true — nothing done", null);
+      return;
+    }
+    const problems = setupProblems(loc, cv);
+    if (problems.length && job.kind !== "health_check") {
+      log({ tool: "setup_guard", ok: false, result_excerpt: problems.join("; ").slice(0, 300) });
+      await finish(db, job, run.id, "blocked", steps, inTok, outTok, `setup incomplete — ${problems.join("; ")}`, null);
       return;
     }
 
