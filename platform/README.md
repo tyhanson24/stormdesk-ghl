@@ -6,6 +6,7 @@ Private HighLevel Marketplace app. Only Ty's agency installs it; clients are sub
 - `supabase/migrations/0001_tenants.sql` — `tenants` (encrypted tokens, one row per install) + `tenant_events` (audit).
 - `supabase/functions/dispatch-oauth` — `/install` (redirect to HighLevel consent), `/callback` (code → tokens → tenants), `/webhook` (INSTALL/UNINSTALL events).
 - `supabase/functions/dispatch-token` — token broker. Office / worker POST `{locationId}` with `x-dispatch-key` and get a fresh access token. Refreshes automatically; mints sub-account tokens from the agency install when no direct install exists.
+- `supabase/functions/dispatch-hl` — **the gateway Office actually uses.** `POST /mcp` is a Dispatch-served MCP server (33 tools, names mirror HighLevel's MCP, plus `hl_request` for raw REST); `/api/<path>` is a raw REST pass-through. Caller sends `Authorization: Bearer <DISPATCH_INTERNAL_KEY>` + `locationId` header; the gateway gets a token from the broker per request. Built because HighLevel's own MCP only accepts Private Integration Tokens, not marketplace OAuth tokens.
 
 ## One-time setup
 1. Supabase project `Dispatch` (us-east-1). Apply the migration. Deploy both functions with `verify_jwt=false` (they authenticate themselves).
@@ -18,8 +19,7 @@ Private HighLevel Marketplace app. Only Ty's agency installs it; clients are sub
    - Manage → Secrets → Client Keys → Add → copy Client ID + Secret into the function secrets above.
    - Manage → Versions → ⋮ on the draft → **Publish**. Private apps skip review and go live immediately; until this is done OAuth returns "No integration found".
 4. Install on the agency once: open `https://<ref>.supabase.co/functions/v1/dispatch-oauth/install?kind=agency`, approve, and on the last screen keep **Install under all locations** and tick **Enable automatic installation to future locations**. That single install covers every sub-account under it, including ones created later by `setup-customer`.
-5. Office: store `DISPATCH_INTERNAL_KEY` and `DISPATCH_TOKEN_URL` as secrets. `setup-customer` and every routine fetch tokens with:
-   `POST $DISPATCH_TOKEN_URL  {"locationId": "..."}  header x-dispatch-key` → use `access_token` as the Bearer for both the HighLevel MCP and REST.
+5. Office: the plugin's `mcp.json` points the `ghl` MCP at `/functions/v1/dispatch-hl/mcp` with plugin variables `DISPATCH_KEY` (= `DISPATCH_INTERNAL_KEY`) and `GHL_LOCATION_ID`. For agency-level work (`setup-customer`): `POST /functions/v1/dispatch-token {"companyId":"<agency>"}` with `x-dispatch-key` → agency access token.
 
 ## Per-client (zero steps)
 None. `setup-customer` creates the sub-account from the snapshot with the agency token, then asks `dispatch-token` for a location token; the broker mints it from the agency install.
