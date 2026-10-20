@@ -1,12 +1,12 @@
 // Dispatch — ingest. HighLevel workflows POST here; we turn each event into one durable job and return fast.
-//   POST /functions/v1/dispatch-ingest/<kind>        kind = intake | approval_reply | appointment_completed | crew_done | welcome | custom
+//   POST /functions/v1/dispatch-ingest/<kind>        kind = intake | approval_reply | appointment_completed | crew_done | welcome | optout | custom
 //   headers: Authorization: Bearer <tenant ingest_key  OR  DISPATCH_INTERNAL_KEY>
 //   body: the workflow's JSON (must carry location_id, or a link containing /location/<id>/)
 // Idempotent: dedupe_key = kind + contact_id + (event_id | message snippet | minute bucket). HighLevel retries ⇒ one job.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { admin, env, json } from "../_shared/ghl.ts";
 
-const KINDS = new Set(["intake", "approval_reply", "appointment_completed", "crew_done", "welcome", "custom"]);
+const KINDS = new Set(["intake", "approval_reply", "appointment_completed", "crew_done", "welcome", "optout", "custom"]);
 
 async function sha(s: string) {
   const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
