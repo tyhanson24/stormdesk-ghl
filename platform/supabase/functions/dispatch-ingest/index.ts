@@ -1,12 +1,12 @@
 // Dispatch — ingest. HighLevel workflows POST here; we turn each event into one durable job and return fast.
-//   POST /functions/v1/dispatch-ingest/<kind>        kind = intake | approval_reply | appointment_completed | crew_done | custom
+//   POST /functions/v1/dispatch-ingest/<kind>        kind = intake | approval_reply | appointment_completed | crew_done | welcome | custom
 //   headers: Authorization: Bearer <tenant ingest_key  OR  DISPATCH_INTERNAL_KEY>
 //   body: the workflow's JSON (must carry location_id, or a link containing /location/<id>/)
 // Idempotent: dedupe_key = kind + contact_id + (event_id | message snippet | minute bucket). HighLevel retries ⇒ one job.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { admin, env, json } from "../_shared/ghl.ts";
 
-const KINDS = new Set(["intake", "approval_reply", "appointment_completed", "crew_done", "custom"]);
+const KINDS = new Set(["intake", "approval_reply", "appointment_completed", "crew_done", "welcome", "custom"]);
 
 async function sha(s: string) {
   const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
@@ -46,7 +46,8 @@ Deno.serve(async (req) => {
   const contactId = body.contact_id ?? body.contactId ?? body?.contact?.id ?? null;
   const eventId = body.event_id ?? body.eventId ?? body.message_id ?? null;
   const bucket = new Date().toISOString().slice(0, 16); // minute
-  const dedupe = await sha(`${locationId}|${kind}|${contactId ?? ""}|${eventId ?? (body.message ?? "").toString().slice(0, 200) + bucket}`);
+  // welcome: one step-1 job per sub-account, ever (the worker schedules step 3 itself).
+  const dedupe = kind === "welcome" ? `welcome1|${locationId}` : await sha(`${locationId}|${kind}|${contactId ?? ""}|${eventId ?? (body.message ?? "").toString().slice(0, 200) + bucket}`);
 
   const priority = kind === "intake" || kind === "approval_reply" ? 50 : 100;
   const { data: job, error } = await db.from("jobs")
