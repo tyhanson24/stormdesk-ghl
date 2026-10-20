@@ -30,9 +30,18 @@ create table public.tenants (
 create index tenants_company_idx on public.tenants (company_id);
 create index tenants_status_idx on public.tenants (status);
 
--- Transparent column encryption: pgsodium encrypts on write, decrypts for the service role via the _decrypted view.
-security label for pgsodium on column public.tenants.access_token  is 'ENCRYPT WITH KEY ID 00000000-0000-0000-0000-000000000000';
-security label for pgsodium on column public.tenants.refresh_token is 'ENCRYPT WITH KEY ID 00000000-0000-0000-0000-000000000000';
+-- Transparent column encryption: pgsodium encrypts on write, decrypts for the service role via decrypted_tenants.
+-- A real key must exist first (the all-zero placeholder id does not exist in a fresh project and makes every insert fail).
+do $$
+declare k uuid;
+begin
+  select id into k from pgsodium.key where name = 'dispatch_tenant_tokens' and status = 'valid' limit 1;
+  if k is null then
+    select id into k from pgsodium.create_key(name => 'dispatch_tenant_tokens');
+  end if;
+  execute format('security label for pgsodium on column public.tenants.access_token  is %L', 'ENCRYPT WITH KEY ID ' || k);
+  execute format('security label for pgsodium on column public.tenants.refresh_token is %L', 'ENCRYPT WITH KEY ID ' || k);
+end $$;
 
 -- Audit of every token exchange / refresh / webhook so support can see what happened per tenant.
 create table public.tenant_events (
