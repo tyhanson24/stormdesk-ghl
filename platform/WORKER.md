@@ -33,7 +33,8 @@ pg_cron (every minute) ───POST──▶ dispatch-worker ◀─────
 - Deployed: `dispatch-ingest`, `dispatch-worker`; migrations 0002 (queue) and 0003 (cron) applied; `platform_config` holds base url + key; cron `dispatch-worker-tick` (every minute, only when a job is runnable) and `dispatch-enqueue-scheduled` (every 5 min) active.
 - Verified without the model: ingest 401/202/dedupe/404; ingest poked the worker; worker claimed, read custom values through the gateway, failed on the missing `ANTHROPIC_API_KEY`, recorded `job_runs`, requeued with 2-min backoff; cron tick retried it (attempt 2). Test job cancelled.
 - Template tenant seeded: `tenants.settings` (timezone, owner_contact_id, trade) and `tenant_files` (company-profile, service-area, pricing-guardrails, do-not-contact).
-- Waiting on: `ANTHROPIC_API_KEY` secret → first real intake run in `mode=test`.
+- First real runs (mode=test, Dispatch template): W1 emergency lead → Emergency/urgency 95, tags, opportunity in Storm Response › New Lead, DRAFT ACK-1 note, approval task, owner note, BLOCKED test_mode note, nothing sent (102 s, 19 tool calls). W2 minor lead → Minor/urgency 30, ASK-PHOTOS draft, approval task (52 s, 12 calls, ~$0.14 with prompt caching). Both in `job_runs`.
+- Prompt caching on system + tools (~6× cheaper per job). `tenants.settings.owner_user_id` feeds task assignedTo (HighLevel requires it).
 
 ## Rollout
 1. Deploy; `mode=test` on the Dispatch template; point `wh_intake` at ingest; fire a golden lead; read `job_runs`.
