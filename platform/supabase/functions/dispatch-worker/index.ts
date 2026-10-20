@@ -27,7 +27,7 @@ const KIND_SPEC: Record<string, { skills: string[]; task: (p: any) => string }> 
   approval_reply: { skills: [], task: (p) => `Owner replied to an approval. Reply text: ${JSON.stringify(p.message ?? p.body ?? "")}. Owner contact: ${p.contact_id}. Find the matching open "Approve:" task(s) on the owner's tasks and the DRAFT notes they reference. APPROVE ALL / APPROVE n → send that draft exactly as written via conversations_send-a-new-message with template set to the draft's template id and approval set to "owner-reply"; tag bot-sent; mark the task complete; convert the DRAFT note to SENT. NO n → mark the task complete with the owner's note, do not send. EDIT n <text> → replace the draft text, re-run the gate, send. Anything else → leave tasks open and say so.` },
   appointment_completed: { skills: ["estimate-drafting"], task: (p) => `Appointment complete for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Draft the estimate from the appointment notes and photos per estimate-drafting. Stage for approval as a contact task. Send nothing.` },
   crew_done: { skills: ["permits-inspections"], task: (p) => `Job marked done for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Per permits-inspections: request inspection, draft the homeowner window text as a DRAFT note + approval task. Send nothing to the homeowner.` },
-  daily_brief: { skills: ["daily-brief"], task: () => `Produce the daily brief per daily-brief. Deliver it to the owner's contact record (SMS + email) through the gate.` },
+  daily_brief: { skills: ["daily-brief"], task: (p) => `Produce the daily brief per daily-brief. Deliver it to the owner's contact record (SMS + email) through the gate. Pending approvals (use these exact numbers in the APPROVE n lines): ${JSON.stringify(p.pending_approvals ?? [])}` },
   health_check: { skills: ["health-check"], task: () => `Run health-check. Write bot_last_health. Report hard failures.` },
   custom: { skills: [], task: (p) => String(p.instruction ?? "No instruction given. Say so and stop.") },
 };
@@ -91,13 +91,19 @@ async function claude(system: string, messages: Msg[], tools: any[]) {
 async function runJob(db: ReturnType<typeof admin>, job: any) {
   const loc = job.location_id as string;
   const t0 = Date.now();
-  const { data: run } = await db.from("job_runs").insert({ job_id: job.id, attempt: job.attempts, model: MODEL() }).select("id").single();
+  const { data: runRow, error: runErr } = await db.from("job_runs").insert({ job_id: job.id, attempt: job.attempts, model: MODEL() }).select("id").single();
+  if (runErr || !runRow) throw runErr ?? new Error("could not create job_run");
+  const run = runRow as { id: number };
   const steps: any[] = [];
   let inTok = 0, outTok = 0;
   const log = (s: any) => { steps.push(s); };
 
   try {
     const spec = KIND_SPEC[job.kind] ?? KIND_SPEC.custom;
+    if (job.kind === "daily_brief") {
+      const { data: pend } = await db.from("approvals").select("n, contact_name, template, text, created_at").eq("location_id", loc).eq("status", "pending").order("n");
+      job.payload = { ...(job.payload ?? {}), pending_approvals: (pend ?? []).map((a: any) => ({ n: a.n, who: a.contact_name, template: a.template, text: a.text.slice(0, 160), since: a.created_at })) };
+    }
     const { data: tenant } = await db.from("tenants").select("settings").eq("location_id", loc).maybeSingle();
     const settings = tenant?.settings ?? {};
     const { data: files } = await db.from("tenant_files").select("path, content").eq("location_id", loc);
@@ -169,6 +175,13 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       } catch (e) { log({ tool: "inbound_lookup", ok: false, ms: Date.now() - t0, result_excerpt: String(e).slice(0, 200) }); }
       gctx.inboundText = inbound || undefined;
     }
+    // approval_reply is pure code: the owner's text is a command over numbered drafts we recorded ourselves.
+    if (job.kind === "approval_reply") {
+      const summary = await approvalReply(db, loc, job, settings, gctx, log);
+      await finish(db, job, run.id, "succeeded", steps, inTok, outTok, summary, null);
+      return;
+    }
+
     const taskText = spec.task(job.payload ?? {}) + (job.kind === "intake"
       ? (inbound ? `\n\nINBOUND MESSAGE FROM THE LEAD (verbatim — this is what you are classifying; copy any address from it exactly, including the house number): """${inbound}"""`
                  : `\n\nNo inbound message text exists yet for this lead (webhook had none, no INBOUND: note, no inbound conversation). Treat it as a lead with unknown damage: ask for the one most useful thing (address first, then photos).`)
@@ -242,6 +255,9 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       }
     }
 
+    // Every DRAFT the model staged becomes a numbered approval the owner can answer (APPROVE n / NO n / EDIT n).
+    if (job.kind !== "approval_reply") await recordDrafts(db, loc, job, steps, log, gctx, settings);
+
     const summary = finalText.split("SUMMARY:").pop()?.trim().slice(0, 2000) || finalText.slice(-2000);
     await finish(db, job, run.id, "succeeded", steps, inTok, outTok, summary, null);
   } catch (e) {
@@ -251,6 +267,127 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     await db.from("job_runs").update({ finished_at: new Date().toISOString(), status: "failed", steps, input_tokens: inTok, output_tokens: outTok, error: msg }).eq("id", run.id);
     await db.from("jobs").update({ status: dead ? "dead" : "queued", last_error: msg, locked_at: null, locked_by: null, run_after: new Date(Date.now() + delaySec * 1000).toISOString(), finished_at: dead ? new Date().toISOString() : null }).eq("id", job.id);
   }
+}
+
+// ---------- approvals ----------
+const DRAFT_RE = /^\s*DRAFT:\s*([A-Z0-9-]+)\s*\|\s*(\w+)\s*\|[^\n]*\n([\s\S]+)$/i;
+const idIn = (excerpt: string) => excerpt.match(/"id"\s*:\s*"([A-Za-z0-9]+)"/)?.[1];
+const contactOf = (step: any): string | undefined => step.args?.contactId ?? String(step.args?.path ?? "").match(/\/contacts\/([A-Za-z0-9]+)\//)?.[1];
+
+async function recordDrafts(db: ReturnType<typeof admin>, loc: string, job: any, steps: any[], log: (s: any) => void, gctx: GateCtx, settings: Record<string, any>) {
+  const drafts: { contactId: string; template: string; channel: string; text: string; noteId?: string }[] = [];
+  const tasks: { contactId: string; taskId?: string; title?: string; dueDate?: string; assignedTo?: string }[] = [];
+  for (const st of steps) {
+    if (st.ok === false || st.ok === "false") continue;
+    const body = st.args?.body?.body ?? st.args?.body;                      // contacts_create-note {body} | hl_request {body:{body}}
+    const m = typeof body === "string" ? body.match(DRAFT_RE) : null;
+    const cid = contactOf(st);
+    if (m && cid && (st.tool === "contacts_create-note" || /\/notes\/?$/.test(String(st.args?.path ?? "")))) {
+      drafts.push({ contactId: cid, template: m[1].toUpperCase(), channel: m[2].toLowerCase() === "email" ? "Email" : "SMS", text: m[3].trim(), noteId: idIn(st.result_excerpt ?? "") });
+    }
+    const isTask = st.tool === "contacts_create-task" || (/\/tasks\/?$/.test(String(st.args?.path ?? "")) && String(st.args?.method ?? "").toUpperCase() === "POST");
+    if (isTask && cid) {
+      const t = st.args?.body?.title ? st.args.body : st.args;
+      if (/^approve:/i.test(String(t?.title ?? ""))) tasks.push({ contactId: cid, taskId: idIn(st.result_excerpt ?? ""), title: t.title, dueDate: t.dueDate, assignedTo: t.assignedTo });
+    }
+  }
+  for (const d of drafts) {
+    const { data: dup } = await db.from("approvals").select("id").eq("location_id", loc).eq("contact_id", d.contactId).eq("status", "pending").eq("text", d.text).maybeSingle();
+    if (dup) continue;
+    await db.from("approvals").update({ status: "superseded", decided_at: new Date().toISOString(), detail: "newer draft for same contact" }).eq("location_id", loc).eq("contact_id", d.contactId).eq("status", "pending");
+    const task = tasks.find((t) => t.contactId === d.contactId);
+    let contactName = "";
+    try { const c = JSON.parse((await callTool(loc, "contacts_get-contact", { contactId: d.contactId })).text).contact; contactName = `${c?.firstName ?? ""} ${c?.lastName ?? ""}`.trim(); } catch { /* optional */ }
+    let n = 0;
+    for (let i = 0; i < 5 && !n; i++) {
+      const { data: mx } = await db.from("approvals").select("n").eq("location_id", loc).order("n", { ascending: false }).limit(1).maybeSingle();
+      const cand = (mx?.n ?? 0) + 1;
+      const { error } = await db.from("approvals").insert({ location_id: loc, n: cand, contact_id: d.contactId, contact_name: contactName, task_id: task?.taskId ?? null, note_id: d.noteId ?? null, template: d.template, channel: d.channel, text: d.text, job_id: job.id });
+      if (!error) n = cand; else if ((error as any).code !== "23505") throw error;
+    }
+    if (task?.taskId) {
+      const body = `#${n} — reply APPROVE ${n} / NO ${n} / EDIT ${n} <new text>\n\n${d.text}`;
+      const r = await callTool(loc, "hl_request", { method: "PUT", path: `/contacts/${d.contactId}/tasks/${task.taskId}`, body: { title: `Approve #${n}: ${d.template} → ${contactName || d.contactId}`, body, dueDate: task.dueDate ?? new Date().toISOString(), assignedTo: task.assignedTo, completed: false } });
+      log({ tool: "approval_recorded", ok: !r.isError, args: { n, template: d.template, contact: d.contactId, task: task.taskId }, result_excerpt: r.text.slice(0, 120) });
+    } else log({ tool: "approval_recorded", ok: true, args: { n, template: d.template, contact: d.contactId, task: null } });
+    // Ping the owner (gate decides: test mode blocks, shadow/live sends to the owner's own record).
+    const owner = settings.owner_contact_id as string | undefined;
+    if (owner && n) {
+      const ping = `Draft #${n} for ${contactName || "new lead"} (${d.template}): "${d.text}"\nReply APPROVE ${n} / NO ${n} / EDIT ${n} <new text>`;
+      const v = await gate(gctx, { type: "SMS", contactId: owner, message: ping, template: "OWNER-PING" });
+      if (!v.ok) log({ tool: "conversations_send-a-new-message", ok: false, args: { to: "owner", n, message: ping.slice(0, 120) }, result_excerpt: `BLOCKED ${v.check}: ${v.reason}` });
+      else { const { template, approval, booked_event_id, ...fwd } = v.args; const r = await callTool(loc, "conversations_send-a-new-message", fwd); log({ tool: "conversations_send-a-new-message", ok: !r.isError, args: { to: "owner", n, message: ping.slice(0, 120) }, result_excerpt: r.text.slice(0, 120) }); }
+    }
+  }
+}
+
+async function approvalReply(db: ReturnType<typeof admin>, loc: string, job: any, settings: Record<string, any>, gctx: GateCtx, log: (s: any) => void): Promise<string> {
+  const SEND = "conversations_send-a-new-message";
+  const p = job.payload ?? {};
+  const from = p.contact_id ?? p.contactId ?? p.contact?.id;
+  const text = String(p.message ?? p.body ?? p.text ?? "").trim();
+  const owner = settings.owner_contact_id as string | undefined;
+  if (!owner || from !== owner) { log({ tool: "approval_reply", ok: false, result_excerpt: `ignored: sender ${from} is not the owner ${owner}` }); return `Ignored: reply from ${from} is not the owner.`; }
+
+  const tellOwner = async (msg: string) => {
+    const v = await gate(gctx, { type: "SMS", contactId: owner, message: msg, template: "OWNER-REPLY" });
+    if (!v.ok) { log({ tool: SEND, ok: false, args: { to: "owner", message: msg.slice(0, 120) }, result_excerpt: `BLOCKED ${v.check}: ${v.reason}` }); return; }
+    const { template, approval, booked_event_id, ...fwd } = v.args;
+    const r = await callTool(loc, SEND, fwd);
+    log({ tool: SEND, ok: !r.isError, args: { to: "owner", message: msg.slice(0, 120) }, result_excerpt: r.text.slice(0, 120) });
+  };
+  const completeTask = async (a: any, note: string) => {
+    if (a.task_id) await callTool(loc, "hl_request", { method: "PUT", path: `/contacts/${a.contact_id}/tasks/${a.task_id}/completed`, body: { completed: true } }).catch(() => null);
+    await callTool(loc, "contacts_create-note", { contactId: a.contact_id, body: note });
+  };
+
+  const cmd = text.toUpperCase().replace(/\s+/g, " ").trim();
+  const results: string[] = [];
+  const nums = (s: string) => [...s.matchAll(/\d+/g)].map((m) => Number(m[0]));
+  let targets: number[] = [], action: "approve" | "no" | "edit" | null = null, editText = "";
+  if (/^APPROVE ALL\b/.test(cmd)) { action = "approve"; const { data } = await db.from("approvals").select("n").eq("location_id", loc).eq("status", "pending"); targets = (data ?? []).map((r: any) => r.n); }
+  else if (/^(APPROVE|YES|OK|SEND)\b/.test(cmd)) { action = "approve"; targets = nums(cmd); }
+  else if (/^(NO|SKIP|DECLINE)\b/.test(cmd)) { action = "no"; targets = nums(cmd); }
+  else if (/^EDIT\s+(\d+)\s+([\s\S]+)$/i.test(text)) { action = "edit"; const m = text.match(/^EDIT\s+(\d+)\s+([\s\S]+)$/i)!; targets = [Number(m[1])]; editText = m[2].trim(); }
+  if (!action || targets.length === 0) {
+    await tellOwner(`Didn't catch that. Reply APPROVE n, APPROVE ALL, NO n, or EDIT n <new text>. — Dispatch`);
+    return `Unparsed owner reply: "${text.slice(0, 80)}"`;
+  }
+
+  for (const n of targets) {
+    const { data: a } = await db.from("approvals").select("*").eq("location_id", loc).eq("n", n).maybeSingle();
+    if (!a) { results.push(`#${n}: not found`); continue; }
+    if (a.status !== "pending") { results.push(`#${n}: already ${a.status}`); continue; }
+    if (action === "no") {
+      await db.from("approvals").update({ status: "declined", decided_at: new Date().toISOString(), decided_job_id: job.id }).eq("id", a.id);
+      await completeTask(a, `DECLINED by owner (#${n}): ${a.template} not sent.`);
+      results.push(`#${n}: declined`); continue;
+    }
+    const msg = action === "edit" ? editText : a.text;
+    const v = await gate(gctx, { type: a.channel, contactId: a.contact_id, message: msg, template: a.template, approval: "owner-reply" });
+    const h = await sha(`${a.contact_id}|${a.template}|${msg}`);
+    if (!v.ok) {
+      await db.from("outbound_log").insert({ location_id: loc, job_id: job.id, contact_id: a.contact_id, channel: a.channel, template: a.template, text_hash: h, verdict: `blocked:${v.check}`, detail: v.reason });
+      // test mode and quiet hours are temporary conditions: keep the draft pending so the owner can approve again later.
+      const keep = v.check === "test_mode" || v.check === "quiet_hours";
+      await db.from("approvals").update(keep ? { detail: `${v.check}: ${v.reason}` } : { status: "blocked", decided_at: new Date().toISOString(), decided_job_id: job.id, detail: `${v.check}: ${v.reason}` }).eq("id", a.id);
+      await callTool(loc, "contacts_create-note", { contactId: a.contact_id, body: `BLOCKED: ${v.check} — ${v.reason} (owner approved #${n})` });
+      log({ tool: SEND, ok: false, args: { n, contactId: a.contact_id, message: msg.slice(0, 120) }, result_excerpt: `BLOCKED ${v.check}: ${v.reason}` });
+      results.push(`#${n}: BLOCKED ${v.check}`); continue;
+    }
+    const { template, approval, booked_event_id, ...fwd } = v.args;
+    const r = await callTool(loc, SEND, fwd);
+    await db.from("outbound_log").insert({ location_id: loc, job_id: job.id, contact_id: v.args.contactId, channel: a.channel, template: a.template, text_hash: h, verdict: r.isError ? "error" : (v.redirected ? "redirected:shadow" : "sent"), detail: r.isError ? r.text.slice(0, 300) : (v.redirected ? "shadow redirect to owner" : null) });
+    log({ tool: SEND, ok: !r.isError, args: { n, contactId: a.contact_id, message: msg.slice(0, 120) }, result_excerpt: r.text.slice(0, 120) });
+    if (r.isError) { results.push(`#${n}: send error`); continue; }
+    await db.from("approvals").update({ status: "sent", decided_at: new Date().toISOString(), decided_job_id: job.id, text: msg, detail: action === "edit" ? "edited by owner" : null }).eq("id", a.id);
+    await callTool(loc, "contacts_add-tags", { contactId: a.contact_id, tags: ["bot-sent"] });
+    await completeTask(a, `SENT: ${a.template} | ${a.channel.toLowerCase()} | ${new Date().toISOString()}${v.redirected ? " (shadow → owner)" : ""}\n${msg}`);
+    results.push(`#${n}: sent${v.redirected ? " (shadow)" : ""}`);
+  }
+  const line = results.join(" · ");
+  await tellOwner(`${line} — Dispatch`);
+  return `Owner replied "${text.slice(0, 40)}": ${line}`;
 }
 
 async function finish(db: ReturnType<typeof admin>, job: any, runId: number, status: string, steps: any[], inTok: number, outTok: number, summary: string, error: string | null) {
