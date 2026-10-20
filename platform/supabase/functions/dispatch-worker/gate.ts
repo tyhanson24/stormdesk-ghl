@@ -91,6 +91,22 @@ export async function gate(ctx: GateCtx, raw: SendArgs): Promise<Verdict> {
     if (channel.toUpperCase() === "SMS" && text.length > 320) return { ok: false, check: "length", reason: `${text.length} chars > 320` };
   }
 
+  // 6b compliance (live modes, homeowner SMS only): carrier pause, consent ledger, A2P / toll-free bridge.
+  //    Owner/crew messages and shadow redirects (which go to the owner) are exempt. Email is not SMS-regulated here.
+  if (!isOwner && !redirected && channel.toUpperCase() === "SMS") {
+    const paused = ctx.settings.sms_paused;
+    if (paused) return { ok: false, check: "carrier_pause", reason: `SMS paused ${paused.at ?? ""}: ${paused.reason ?? "carrier block"} — resume with dispatch_sms-resume after fixing` };
+    const { data: cons } = await ctx.db.from("consents").select("status, source, created_at").eq("location_id", ctx.locationId).eq("contact_id", args.contactId).eq("channel", "SMS").order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (!cons) return { ok: false, check: "consent", reason: "no SMS consent on file for this contact (lead has not texted in / no form consent); record it with dispatch_consent or wait for an inbound text" };
+    if (cons.status === "opted_out") return { ok: false, check: "opt_out", reason: `contact opted out (${cons.source} ${String(cons.created_at).slice(0, 10)})` };
+    const { data: a2p } = await ctx.db.from("a2p_registrations").select("campaign_status").eq("location_id", ctx.locationId).maybeSingle();
+    if (a2p?.campaign_status !== "approved") {
+      const { data: bridge } = await ctx.db.from("numbers").select("number").eq("location_id", ctx.locationId).eq("kind", "tollfree").eq("verified", true).eq("status", "active").order("purpose").limit(1).maybeSingle();
+      if (!bridge) return { ok: false, check: "a2p", reason: `10DLC campaign is ${a2p?.campaign_status ?? "not_started"} and no verified toll-free bridge number is assigned` };
+      args.fromNumber = bridge.number;
+    }
+  }
+
   // 7 quiet hours (owner / crew exempt)
   const crew = tags.includes("crew") || tags.includes("owner");
   if (!isOwner && !crew) {
