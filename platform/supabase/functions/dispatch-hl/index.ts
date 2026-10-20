@@ -50,8 +50,8 @@ const tools: Record<string, Tool> = {
   // contacts
   "contacts_get-contact": { description: "Get a contact by id.", input: { contactId: S("Contact id") }, required: ["contactId"], run: (c, a) => hl(c, "GET", `/contacts/${a.contactId}`) },
   "contacts_search": { description: "Search contacts in this sub-account. `query` is free text (name, phone, email); optional `filters` array uses HighLevel's search filter syntax.", input: { query: S("Free-text search"), filters: S("HighLevel filters array", "array"), limit: S("Max results (default 20)", "number"), page: S("Page", "number") }, run: (c, a) => hl(c, "POST", "/contacts/search", { locationId: c.loc, query: a.query, filters: a.filters, pageLimit: a.limit ?? 20, page: a.page ?? 1 }) },
-  "contacts_create-contact": { description: "Create a contact. Fields: firstName, lastName, name, email, phone, address1, city, state, postalCode, tags[], customFields[{id|key,value}], source.", input: { contact: S("Contact fields object", "object") }, required: ["contact"], run: (c, a) => hl(c, "POST", "/contacts/", { ...a.contact, locationId: c.loc }) },
-  "contacts_upsert-contact": { description: "Upsert a contact by phone/email.", input: { contact: S("Contact fields object", "object") }, required: ["contact"], run: (c, a) => hl(c, "POST", "/contacts/upsert", { ...a.contact, locationId: c.loc }) },
+  "contacts_create-contact": { description: "Create a contact. Fields: firstName, lastName (or name), email, phone, address1, city, state, postalCode, tags[], customFields[{id|key,value}], source. Give at least one of firstName/lastName/name/email/phone.", input: { contact: S("Contact fields object", "object") }, required: ["contact"], run: (c, a) => hl(c, "POST", "/contacts/", cleanContact(a.contact, c.loc)) },
+  "contacts_upsert-contact": { description: "Upsert a contact by phone/email.", input: { contact: S("Contact fields object", "object") }, required: ["contact"], run: (c, a) => hl(c, "POST", "/contacts/upsert", cleanContact(a.contact, c.loc)) },
   "contacts_update-contact": { description: "Update contact fields (firstName, lastName, email, phone, address, customFields[], tags[] …).", input: { contactId: S("Contact id"), fields: S("Fields to update", "object") }, required: ["contactId", "fields"], run: (c, a) => hl(c, "PUT", `/contacts/${a.contactId}`, a.fields) },
   "contacts_add-tags": { description: "Add tags to a contact.", input: { contactId: S("Contact id"), tags: S("Tags", "array") }, required: ["contactId", "tags"], run: (c, a) => hl(c, "POST", `/contacts/${a.contactId}/tags`, { tags: a.tags }) },
   "contacts_remove-tags": { description: "Remove tags from a contact.", input: { contactId: S("Contact id"), tags: S("Tags", "array") }, required: ["contactId", "tags"], run: (c, a) => hl(c, "DELETE", `/contacts/${a.contactId}/tags`, { tags: a.tags }) },
@@ -87,6 +87,16 @@ const tools: Record<string, Tool> = {
   // escape hatch
   "hl_request": { description: "Raw HighLevel REST call for anything above doesn't cover. path like /contacts/{id}/notes. locationId is NOT added automatically — include it in query/body where the endpoint needs it (this sub-account's id is in the `locationId` field of locations_get-location).", input: { method: S("GET|POST|PUT|DELETE"), path: S("Path under services.leadconnectorhq.com"), query: S("Query params", "object"), body: S("JSON body", "object") }, required: ["method", "path"], run: (c, a) => hl(c, a.method.toUpperCase(), a.path, a.body, a.query) },
 };
+// HighLevel rejects a contact body with both `name` and firstName/lastName, empty strings, or unknown keys like contactId.
+function cleanContact(input: any, loc: string) {
+  const c: Record<string, unknown> = { ...(input ?? {}) };
+  if ((c.firstName || c.lastName) && c.name) delete c.name;
+  if (c.name && !c.firstName && !c.lastName) { const [f, ...r] = String(c.name).trim().split(/\s+/); c.firstName = f; if (r.length) c.lastName = r.join(" "); delete c.name; }
+  for (const k of Object.keys(c)) if (c[k] === "" || c[k] === null || c[k] === undefined) delete c[k];
+  delete c.id; delete c.contactId; delete c.locationId;
+  if (Array.isArray(c.tags)) c.tags = c.tags.map((t: unknown) => String(t).toLowerCase());
+  return { ...c, locationId: loc };
+}
 const ms = (v: string | number) => (typeof v === "number" || /^\d+$/.test(String(v))) ? Number(v) : new Date(v).getTime();
 
 function toolList() {
