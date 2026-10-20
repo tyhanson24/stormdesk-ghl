@@ -33,7 +33,7 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 3. **Owner user (1 min, Ty).** Add the owner as a user on the sub-account (our app has `users.readonly` only). Re-run setup with `location_id` so `owner_user_id` is stored (tasks are assigned to it).
 4. **Number + A2P (10 min, Ty clicks submit).** Buy one local number; A2P packet from the trade pack + intake answers (generator still to build). Standard brand, Low Volume Mixed campaign.
 5. **Golden test (Office, 8 min).** "run golden-test on <Company>" — the cloud worker runs intake; Office grades. Must PASS.
-6. **Welcome (needs Ty's approval of the copy).** Owner gets the welcome text + email: brief at 5:50, APPROVE n / NO n / EDIT n, STOP BOTS.
+6. **Welcome (automatic).** Golden PASS queues `dispatch_welcome`; the owner gets W-1 text + W-2 email the moment Ty flips `mode` to `shadow` (held while `test`), and the W-3 recap 3 days later. Copy: `config/welcome-copy.md` (approved).
 7. **Go-live.** A2P approved → `mode=shadow` 48 h → Ty flips `mode=storm` or `standard`.
 
 Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 post to `dispatch-ingest` and the cloud worker runs them (`platform/WORKER.md`).
@@ -46,6 +46,5 @@ Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 post t
 ## Still to build
 - WF-00 (PIVOT): form submit → tag → notify Ty → webhook to Office "new client".
 - ~~`setup-customer` skill~~ — done (`skills/setup-customer`, `platform/supabase/functions/dispatch-setup`).
-- WF-00 welcome sequence inside the snapshot (text + email + day-3 recap).
 - A2P packet generator (template in `config/a2p-template.md`).
 - ~~Marketplace OAuth app~~ — done (platform/).
