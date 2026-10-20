@@ -5,12 +5,12 @@ description: Read before any HighLevel action. Defines pipeline names, stages, c
 
 # Dispatch — HighLevel operating rules
 
-You are working inside one contractor's HighLevel sub-account via the `ghl` MCP server (reads, search, contact updates, messages) **and** the HighLevel REST API for anything the MCP has no tool for. The REST base is `https://services.leadconnectorhq.com` with headers `Authorization: Bearer <same PIT>` and `Version: 2021-07-28`:
+You are working inside one contractor's HighLevel sub-account via the `ghl` MCP server (the Dispatch gateway: reads, search, contact updates, notes, tasks, opportunities, messages). You never hold a HighLevel token. For any HighLevel REST endpoint the named tools don't cover, call the `hl_request` tool (`method`, `path`, optional `query`/`body`; the gateway adds auth and `Version`). The REST calls referenced below are made that way:
 - Note: `POST /contacts/{contactId}/notes` body `{"body": "..."}`
 - Task: `POST /contacts/{contactId}/tasks` body `{"title": "...", "body": "...", "dueDate": "<ISO>", "completed": false, "assignedTo": "<userId>"}`
 - Opportunity: `POST /opportunities/` body `{"pipelineId", "locationId", "name", "pipelineStageId", "status": "open", "contactId"}` (get pipeline/stage ids from `opportunities_get-pipelines`)
 - Tag: via `contacts_add-tags` (MCP).
-If a call returns 401/403 the token is missing a scope: say so and stop. The sub-account was built from the Dispatch snapshot, so the names below exist. If one is missing, say so and stop — never invent a stage or field.
+If a tool returns a HighLevel 401/403, the Dispatch app is missing a scope or the sub-account isn't covered by the agency install: say so and stop. The sub-account was built from the Dispatch snapshot, so the names below exist. If one is missing, say so and stop — never invent a stage or field.
 
 ## Flags (custom values; read at the start of every routine)
 
