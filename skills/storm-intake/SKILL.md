@@ -15,7 +15,7 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
 ## Steps
 1. Load `ghl-operating-rules` and the trade pack. Check `bots_enabled` and `mode`. Read company-profile, service-area, do-not-contact. If a company file is missing, proceed with defaults (service area = any address in the sub-account's state; auto_ack = false; storm_event = the `storm_event` custom value) and say which files were missing in the log.
 2. `contacts_get-contact`. Read the full thread with `conversations_get-messages`.
-3. Extract: property address, damage type, severity words ("water coming in", "tarp", "shingles in yard", "fence down on neighbor's side"), photos attached?, insurance mentioned?, how they found us.
+3. Extract: property address, damage type, severity words ("water coming in", "tarp", "shingles in yard", "fence down on neighbor's side"), photos attached?, insurance mentioned?, how they found us. Copy the address **exactly as the lead wrote it, house number included** — `{street}` in every field, opportunity name and template means the full street line (e.g. "210 Golden Test Way"), never just the street name.
 4. Address check: inside service-area? If not → tag `out-of-area`, set urgency_score 0, write the OUT-OF-AREA draft as a `DRAFT:` note plus an owner approval task (same as any other reply), no opportunity, stop.
 5. Severity from the trade pack: `Emergency` = `{pack.emergency_rule}`. `Major` = `{pack.major_rule}`. `Minor` = `{pack.minor_rule}`. `Unknown` = no detail yet.
 6. Upsert contact fields: property_address, damage_type, damage_severity, has_photos, insurance_claim, lead_source, storm_event.
@@ -27,7 +27,13 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
    ```
    Two lines only: no explanation, no severity notes, no "why" after the message (reasoning goes in your run log, not the note). Then create a contact task (REST) titled `Approve: intake reply → {name}` assigned to the owner, due now. Missing info → ask for ONE thing at a time (address first, then photos).
 9. Set `next_followup_date` = +1 day if waiting on info, else leave for Dispatcher.
-10. Tag `bot-drafted`. Log.
+10. Tags (use `contacts_add-tags`; add every one that applies, in one call):
+   - always `storm-lead` and `bot-drafted`;
+   - `needs-photos` when no photos were attached (whenever you draft ASK-PHOTOS);
+   - `insurance` when the lead mentions insurance or a claim;
+   - `emergency` + `{pack.emergency_tag}` when severity is Emergency;
+   - `out-of-area` per step 4; `storm-chaser-risk` when door-knockers are mentioned.
+   Then log.
 
 ## Templates (adapt to company voice; never add price)
 
