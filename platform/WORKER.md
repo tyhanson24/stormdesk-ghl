@@ -43,6 +43,9 @@ pg_cron (every minute) ───POST──▶ dispatch-worker ◀─────
   - storm-intake skill now states the tag rules, "{street} = full line incl. house number", and Qualified only with photos;
   - tool-call transport errors are retried once and returned to the model as errors (not job failures); retry backoff 30 s → 2 m → 8 m → 32 m → 60 m; auto-send list is stated in the prompt (draft-only otherwise).
   - Typical intake: 60–80 s, ~30–60k billed-equivalent input tokens, 0 sends in test mode.
+- **Owner approvals are code, not model** (migration 0004 `approvals`): every `DRAFT:` note the worker stages gets a per-location number `n`; the HighLevel task is renamed "Approve #n: TEMPLATE → Name" and the owner is pinged "Draft #n for … Reply APPROVE n / NO n / EDIT n". WF-11 posts the owner's text to `dispatch-ingest/approval_reply`; the worker parses APPROVE n / APPROVE ALL / YES / OK / SEND / NO n / SKIP / DECLINE / EDIT n <text>, ignores non-owner senders, runs the gate, sends, tags `bot-sent`, completes the task, writes SENT/DECLINED/BLOCKED notes and confirms to the owner — ~3 s, zero model tokens. test_mode/quiet_hours blocks keep the draft pending. The daily brief gets the pending list with the same numbers.
+- Template cut over fully: `wh_intake`, `wh_approval`, `wh_estimate`, `wh_crew_done` → `dispatch-ingest/<kind>`; `bot_webhook_key*` = tenant ingest key (`tenant_events` `cutover:wh_approval`). WF-11 is published on the template.
+- `dispatch-setup` + `dispatch_setup-customer` gateway tool + `skills/setup-customer`: one call onboards a client sub-account (see ONBOARDING.md).
 
 ## Rollout
 1. Deploy; `mode=test` on the Dispatch template; point `wh_intake` at ingest; fire a golden lead; read `job_runs`.
