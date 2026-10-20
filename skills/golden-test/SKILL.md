@@ -47,7 +47,10 @@ RESULT: PASS | FAIL (n checks)
 ```
 
 ## Teardown
-Delete nothing. Tag the three contacts `golden-test` (already) and close their opportunities as `Closed Lost` with reason "golden test". Restore custom value `mode` to the value recorded in Setup (never from company-profile). If the previous mode was `shadow` or `test`, say so in the report so the owner knows the account is not live yet.
+Delete nothing. Tag the three contacts `golden-test` (already) and close their opportunities as `Closed Lost` with reason "golden test". Mark every open `Approve #n:` task on G1–G3 completed (`PUT /contacts/{id}/tasks/{taskId}/completed` with `{"completed": true}`) so the owner's task list and the daily brief don't carry test drafts; the worker already records drafts on `golden-test`-tagged contacts as non-pending, so they never reach the owner's pending list, pings, or the daily brief. Restore custom value `mode` to the value recorded in Setup (never from company-profile). If the previous mode was `shadow` or `test`, say so in the report so the owner knows the account is not live yet.
+
+## On PASS — welcome (client sub-accounts only)
+If RESULT is PASS **and** this is not the Dispatch template (`company_name` is a real company, `wf02_id` is not the template's), call `dispatch_welcome` once. It queues the owner welcome sequence (W-1 text + W-2 email, then the day-3 recap); the cloud worker holds it while `mode` is `test` and sends the moment Ty flips the account to `shadow`. Never call it on the template, never twice (the queue dedupes anyway), and never call it on a FAIL. Mention in the report: "Welcome queued — sends when mode leaves test."
 
 ## Rules
 A FAIL on any check means the sub-account is not live-ready. Never "fix" a result by editing data by hand; fix the skill or the setup, then rerun. Run after every change to any skill file, the snapshot, or the trade pack.
