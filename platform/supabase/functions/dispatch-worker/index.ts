@@ -195,6 +195,14 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       messages.push({ role: "user", content: results });
     }
 
+    // Intake invariants the skill requires on every lead: `storm-lead` + `bot-drafted`. Enforce in code (idempotent) so a
+    // forgetful run can't drop them. Conditional tags (needs-photos, insurance, emergency…) stay with the model.
+    if (job.kind === "intake" && job.payload?.contact_id) {
+      const ts = Date.now();
+      const r = await callTool(loc, "contacts_add-tags", { contactId: job.payload.contact_id, tags: ["storm-lead", "bot-drafted"] });
+      log({ tool: "contacts_add-tags", args: { enforced: true, tags: ["storm-lead", "bot-drafted"] }, ok: !r.isError, ms: Date.now() - ts, result_excerpt: r.text.slice(0, 200) });
+    }
+
     const summary = finalText.split("SUMMARY:").pop()?.trim().slice(0, 2000) || finalText.slice(-2000);
     await finish(db, job, run.id, "succeeded", steps, inTok, outTok, summary, null);
   } catch (e) {
