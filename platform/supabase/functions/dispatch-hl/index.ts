@@ -6,6 +6,7 @@
 // HighLevel's first-party MCP only accepts Private Integration Tokens, not marketplace OAuth tokens — hence our own.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { admin, env, json } from "../_shared/ghl.ts";
+import { type A2pInput, buildPacket, parsePack, policyUrls, privacyHtml, smsTermsHtml } from "../_shared/a2p.ts";
 
 const HL = "https://services.leadconnectorhq.com";
 const HOP = new Set(["host", "connection", "content-length", "transfer-encoding", "authorization", "x-dispatch-key", "apikey", "locationid"]);
@@ -85,7 +86,7 @@ const tools: Record<string, Tool> = {
   "workflows_get-workflows": { description: "List workflows (id, name, status).", input: {}, run: (c) => hl(c, "GET", "/workflows/", undefined, { locationId: c.loc }) },
   "users_get-users": { description: "Users on this sub-account.", input: {}, run: (c) => hl(c, "GET", "/users/", undefined, { locationId: c.loc }) },
   // Dispatch platform (not HighLevel): onboarding. Proxies to dispatch-setup with the internal key.
-  "dispatch_setup-customer": { description: "Set up a NEW client sub-account for Dispatch: creates it from the Dispatch snapshot (or reuses location_id), waits for the snapshot, creates the tenant + ingest key, owner contact, writes all 16 custom values (webhooks point at the cloud worker, mode=test) and the company files. Idempotent: re-run with location_id to finish steps. Returns location_id, owner_contact_id and the list of remaining manual steps. Pass dry_run=true to validate only. Only call this when Ty has asked to onboard a specific client.", input: { company_name: S("Company name exactly as on the EIN letter"), trade: S("roofing|fencing|gutters|screen-enclosures|tree-service|restoration|turf|other"), owner_first: S("Owner first name"), owner_last: S("Owner last name"), owner_phone: S("Owner cell"), owner_email: S("Owner email"), phone: S("Business phone"), website: S("Website"), address1: S("Street"), city: S("City"), state: S("State"), postal_code: S("ZIP"), timezone: S("IANA tz, default America/Chicago"), service_zips: S("ZIPs served (comma string or array)"), license_number: S("License number"), business_hours: S("Business hours"), google_profile: S("Google Business Profile link"), review_link: S("Review link"), auto_ack: S("true when the owner chose 'auto-send 3 basic replies'", "boolean"), storm_event: S("Current storm event label, e.g. 'Isaias 2026-10'"), location_id: S("Existing sub-account id to reuse (re-run)"), dry_run: S("Validate only", "boolean") }, required: ["company_name", "trade", "owner_first", "owner_last", "owner_phone"], run: async (_c, a) => {
+  "dispatch_setup-customer": { description: "Set up a NEW client sub-account for Dispatch: creates it from the Dispatch snapshot (or reuses location_id), waits for the snapshot, creates the tenant + ingest key, owner contact, writes all 17 custom values (webhooks point at the cloud worker, mode=test) and the company files. Idempotent: re-run with location_id to finish steps. Returns location_id, owner_contact_id and the list of remaining manual steps. Pass dry_run=true to validate only. Only call this when Ty has asked to onboard a specific client.", input: { company_name: S("Company name exactly as on the EIN letter"), trade: S("roofing|fencing|gutters|screen-enclosures|tree-service|restoration|turf|other"), owner_first: S("Owner first name"), owner_last: S("Owner last name"), owner_phone: S("Owner cell"), owner_email: S("Owner email"), phone: S("Business phone"), website: S("Website"), address1: S("Street"), city: S("City"), state: S("State"), postal_code: S("ZIP"), timezone: S("IANA tz, default America/Chicago"), service_zips: S("ZIPs served (comma string or array)"), license_number: S("License number"), business_hours: S("Business hours"), google_profile: S("Google Business Profile link"), review_link: S("Review link"), auto_ack: S("true when the owner chose 'auto-send 3 basic replies'", "boolean"), storm_event: S("Current storm event label, e.g. 'Isaias 2026-10'"), location_id: S("Existing sub-account id to reuse (re-run)"), dry_run: S("Validate only", "boolean") }, required: ["company_name", "trade", "owner_first", "owner_last", "owner_phone"], run: async (_c, a) => {
     const r = await fetch(`${env("PUBLIC_BASE_URL")}/functions/v1/dispatch-setup`, { method: "POST", headers: { "content-type": "application/json", "x-dispatch-key": env("DISPATCH_INTERNAL_KEY") }, body: JSON.stringify(a) });
     const text = await r.text();
     if (!r.ok) throw new Error(`dispatch-setup ${r.status}: ${text.slice(0, 500)}`);
@@ -163,6 +164,47 @@ const tools: Record<string, Tool> = {
     await db.from("tenants").update({ settings: rest }).eq("location_id", c.loc);
     await db.from("tenant_events").insert({ location_id: c.loc, event: "carrier_block_cleared", detail: { paused, note: a.note ?? null } });
     return { ok: true, was_paused: true, cleared: paused };
+  } },
+  "dispatch_a2p-packet": { description: "Generate this sub-account's 10DLC registration packet (Standard brand + Low Volume Mixed campaign: every Trust Center field, opt-in flow, sample messages, web-form consent text, policy links, checklist). Pulls business info from the sub-account, EIN/owner from tenant settings, and samples from the trade pack. Saves tenant files a2p-packet.md, sms-terms.html, privacy.html and notes the owner contact. Returns the markdown plus `missing` (fields Ty must fill before submitting). Hosted policy URLs are live immediately (plain text on supabase.co; the .html tenant files are the styled versions to put on the client site).", input: { note_owner: S("Add a note on the owner contact (default true)", "boolean") }, run: async (c, a) => {
+    const db = admin();
+    const base = env("PUBLIC_BASE_URL");
+    const [{ data: t }, { data: f }, locRes] = await Promise.all([
+      db.from("tenants").select("settings").eq("location_id", c.loc).maybeSingle(),
+      db.from("tenant_files").select("content").eq("location_id", c.loc).eq("path", "company-profile.md").maybeSingle(),
+      hl(c, "GET", `/locations/${c.loc}`).catch(() => ({})) as Promise<any>,
+    ]);
+    const s = t?.settings ?? {};
+    const L = locRes?.location ?? {};
+    const B = L.business ?? {};
+    const prof = f?.content ?? "";
+    const pv = (k: string) => prof.match(new RegExp(`^${k}:\\s*"?([^"\\n]*)"?`, "m"))?.[1]?.trim() || undefined;
+    const trade = String(s.trade ?? pv("trade") ?? "").toLowerCase();
+    const ref = Deno.env.get("SKILLS_REF") ?? "main";
+    const packText = trade ? await fetch(`https://raw.githubusercontent.com/tyhanson24/stormdesk-ghl/${ref}/trades/${trade}.md`).then((r) => r.ok ? r.text() : "").catch(() => "") : "";
+    const address = [B.address ?? L.address1, B.city ?? L.city, [B.state ?? L.state, B.postalCode ?? L.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ") || pv("local_address");
+    const ownerName = String(pv("owner_name") ?? "").split(/\s+/);
+    const input: A2pInput = {
+      loc: c.loc, base,
+      company: String(B.name ?? L.name ?? s.company_name ?? "").trim() || "(company)",
+      ein: s.ein ? String(s.ein).replace(/\D/g, "") : undefined,
+      address, website: B.website ?? L.website ?? pv("website"),
+      owner_first: ownerName[0], owner_last: ownerName.slice(1).join(" "),
+      owner_phone: s.owner_phone ?? pv("owner_phone"), business_phone: s.sms_number ?? L.phone ?? undefined, owner_email: s.owner_email ?? L.email,
+      trade, storm_event: pv("storm_event"), review_link: pv("review_link"),
+      pack: parsePack(packText), sms_number: s.sms_number,          // only a number registered via dispatch_numbers counts (Business Info phone is not an LC number)
+    };
+    const { markdown, missing } = buildPacket(input);
+    const urls = policyUrls(base, c.loc);
+    const now = new Date().toISOString();
+    const files: Record<string, string> = { "a2p-packet.md": markdown, "sms-terms.html": smsTermsHtml(input.company, input.business_phone ?? input.owner_phone, input.owner_email, urls.privacy), "privacy.html": privacyHtml(input.company, input.business_phone ?? input.owner_phone, input.owner_email, input.address) };
+    for (const [path, content] of Object.entries(files)) {
+      const { error } = await db.from("tenant_files").upsert({ location_id: c.loc, path, content, updated_at: now }, { onConflict: "location_id,path" });
+      if (error) throw new Error(error.message);
+    }
+    await db.from("tenants").update({ settings: { ...s, a2p_packet_at: now } }).eq("location_id", c.loc);
+    if (a.note_owner !== false && s.owner_contact_id) await hl(c, "POST", `/contacts/${s.owner_contact_id}/notes`, { body: `A2P packet generated (tenant file a2p-packet.md). ${missing.length ? `Still needed before submit: ${missing.join("; ")}.` : "Ready to submit in Trust Center."} SMS terms: ${urls.sms_terms} · Privacy: ${urls.privacy}` }).catch(() => null);
+    await db.from("tenant_events").insert({ location_id: c.loc, event: "a2p_packet", detail: { missing, company: input.company } });
+    return { ok: true, missing, policy_urls: urls, file: "a2p-packet.md", packet: markdown };
   } },
   // escape hatch
   "hl_request": { description: "Raw HighLevel REST call for anything above doesn't cover. path like /contacts/{id}/notes. locationId is NOT added automatically — include it in query/body where the endpoint needs it (this sub-account's id is in the `locationId` field of locations_get-location).", input: { method: S("GET|POST|PUT|DELETE"), path: S("Path under services.leadconnectorhq.com"), query: S("Query params", "object"), body: S("JSON body", "object") }, required: ["method", "path"], run: (c, a) => hl(c, a.method.toUpperCase(), a.path, a.body, a.query) },
