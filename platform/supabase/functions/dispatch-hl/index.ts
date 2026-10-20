@@ -5,7 +5,7 @@
 // Caller auth: `Authorization: Bearer <DISPATCH_INTERNAL_KEY>` (or `x-dispatch-key`) + `locationId: <sub-account>` header.
 // HighLevel's first-party MCP only accepts Private Integration Tokens, not marketplace OAuth tokens — hence our own.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { env, json } from "../_shared/ghl.ts";
+import { admin, env, json } from "../_shared/ghl.ts";
 
 const HL = "https://services.leadconnectorhq.com";
 const HOP = new Set(["host", "connection", "content-length", "transfer-encoding", "authorization", "x-dispatch-key", "apikey", "locationid"]);
@@ -98,6 +98,71 @@ const tools: Record<string, Tool> = {
     const text = await r.text();
     if (!r.ok) throw new Error(`dispatch-ingest ${r.status}: ${text.slice(0, 300)}`);
     return JSON.parse(text);
+  } },
+  // Dispatch platform: compliance (consent ledger, A2P tracker, numbers, carrier pause). All enforced by the worker's send gate.
+  "dispatch_consent": { description: "Record SMS consent for a contact in the Dispatch consent ledger. The gate blocks live homeowner SMS without an opted_in record. Use status=opted_in with source=owner_attested only when the owner confirms the customer asked for texts (say who/when in evidence); use opted_out when a customer asks to stop by any channel.", input: { contact_id: S("Contact id"), status: S("opted_in|opted_out"), source: S("owner_attested|web_form|inbound_sms|missed_call|import|stop_keyword"), evidence: S("What proves it: who said what, when, form id, etc.") }, required: ["contact_id", "status", "source", "evidence"], run: async (c, a) => {
+    if (!["opted_in", "opted_out"].includes(a.status)) throw new Error("status must be opted_in or opted_out");
+    const db = admin();
+    const { error } = await db.from("consents").insert({ location_id: c.loc, contact_id: a.contact_id, channel: "SMS", status: a.status, source: a.source, evidence: String(a.evidence).slice(0, 500) });
+    if (error) throw new Error(error.message);
+    if (a.status === "opted_out") { await hl(c, "POST", `/contacts/${a.contact_id}/tags`, { tags: ["do-not-contact"] }).catch(() => null); await hl(c, "PUT", `/contacts/${a.contact_id}`, { dnd: true }).catch(() => null); }
+    const { data } = await db.from("consents").select("status, source, created_at").eq("location_id", c.loc).eq("contact_id", a.contact_id).order("created_at", { ascending: false }).limit(5);
+    return { ok: true, history: data };
+  } },
+  "dispatch_a2p-status": { description: "Read or update this sub-account's 10DLC (A2P) registration tracker. With no args: returns current status. To update: pass brand_status/campaign_status (not_started|pending|approved|rejected) and optional ids/notes. The gate refuses live homeowner SMS until campaign_status=approved (or a verified toll-free bridge number is assigned). Also mirrors a2p_status into the sub-account custom value.", input: { brand_status: S("not_started|pending|approved|rejected"), campaign_status: S("not_started|pending|approved|rejected"), brand_id: S("Brand id"), campaign_id: S("Campaign id"), notes: S("Notes (rejection reason, resubmit date…)") }, run: async (c, a) => {
+    const db = admin();
+    const ok = (v: unknown) => v === undefined || ["not_started", "pending", "approved", "rejected"].includes(String(v));
+    if (!ok(a.brand_status) || !ok(a.campaign_status)) throw new Error("status must be not_started|pending|approved|rejected");
+    if (a.brand_status || a.campaign_status || a.brand_id || a.campaign_id || a.notes) {
+      const { data: cur } = await db.from("a2p_registrations").select("*").eq("location_id", c.loc).maybeSingle();
+      const row: Record<string, unknown> = { location_id: c.loc, ...(cur ?? {}), updated_at: new Date().toISOString() };
+      for (const k of ["brand_status", "campaign_status", "brand_id", "campaign_id", "notes"]) if (a[k] !== undefined) row[k] = a[k];
+      if (row.campaign_status === "pending" && !row.submitted_at) row.submitted_at = new Date().toISOString();
+      if (row.campaign_status === "approved" && !row.approved_at) row.approved_at = new Date().toISOString();
+      const { error } = await db.from("a2p_registrations").upsert(row, { onConflict: "location_id" });
+      if (error) throw new Error(error.message);
+      try {
+        const cv: any = await hl(c, "GET", `/locations/${c.loc}/customValues`);
+        const m = (cv.customValues ?? []).find((v: any) => v.name === "a2p_status");
+        const val = `brand=${row.brand_status} campaign=${row.campaign_status}`;
+        if (m) await hl(c, "PUT", `/locations/${c.loc}/customValues/${m.id}`, { name: "a2p_status", value: val }); else await hl(c, "POST", `/locations/${c.loc}/customValues`, { name: "a2p_status", value: val });
+      } catch { /* custom value is a mirror only */ }
+    }
+    const { data } = await db.from("a2p_registrations").select("*").eq("location_id", c.loc).maybeSingle();
+    const { data: nums } = await db.from("numbers").select("number, kind, verified, status, purpose").eq("location_id", c.loc);
+    return { a2p: data ?? { location_id: c.loc, brand_status: "not_started", campaign_status: "not_started" }, numbers: nums ?? [] };
+  } },
+  "dispatch_numbers": { description: "Dispatch number registry (per sub-account + agency toll-free pool). action=list (this sub-account + unassigned pool), add (number, kind local|tollfree, verified, purpose primary|bridge; location_id optional — omit to add to the pool), assign (number → this sub-account, purpose), release (number → back to pool / status released). A verified, active toll-free number assigned here is used as the from-number for homeowner SMS while 10DLC is pending.", input: { action: S("list|add|assign|release"), number: S("E.164, e.g. +18505550123"), kind: S("local|tollfree"), verified: S("Toll-free verification approved", "boolean"), purpose: S("primary|bridge"), location_id: S("Sub-account to add to (add only); omit for the agency pool"), notes: S("Notes") }, required: ["action"], run: async (c, a) => {
+    const db = admin();
+    const now = new Date().toISOString();
+    if (a.action === "add") {
+      if (!a.number || !a.kind) throw new Error("number and kind required");
+      const { error } = await db.from("numbers").insert({ location_id: a.location_id ?? null, number: a.number, kind: a.kind, verified: !!a.verified, purpose: a.purpose ?? (a.kind === "tollfree" ? "bridge" : "primary"), notes: a.notes ?? null });
+      if (error) throw new Error(error.message);
+    } else if (a.action === "assign") {
+      if (!a.number) throw new Error("number required");
+      const { error } = await db.from("numbers").update({ location_id: c.loc, status: "active", purpose: a.purpose ?? "bridge", updated_at: now }).eq("number", a.number);
+      if (error) throw new Error(error.message);
+      const s = await db.from("tenants").select("settings").eq("location_id", c.loc).maybeSingle();
+      if (a.purpose === "primary" || !s.data?.settings?.sms_number) await db.from("tenants").update({ settings: { ...(s.data?.settings ?? {}), sms_number: a.number } }).eq("location_id", c.loc);
+    } else if (a.action === "release") {
+      if (!a.number) throw new Error("number required");
+      const { error } = await db.from("numbers").update({ location_id: null, status: "released", updated_at: now }).eq("number", a.number);
+      if (error) throw new Error(error.message);
+    } else if (a.action !== "list") throw new Error("action must be list|add|assign|release");
+    const { data: mine } = await db.from("numbers").select("number, kind, verified, status, purpose, notes").eq("location_id", c.loc);
+    const { data: pool } = await db.from("numbers").select("number, kind, verified, status, purpose, notes").is("location_id", null).neq("status", "released");
+    return { location: c.loc, assigned: mine ?? [], pool: pool ?? [] };
+  } },
+  "dispatch_sms-resume": { description: "Clear the carrier-block SMS pause on this sub-account (set automatically by the delivery monitor when sends start failing). Only after the cause is fixed (number/A2P). Returns the pause record that was cleared.", input: { note: S("What was fixed") }, run: async (c, a) => {
+    const db = admin();
+    const { data: t } = await db.from("tenants").select("settings").eq("location_id", c.loc).maybeSingle();
+    const paused = t?.settings?.sms_paused ?? null;
+    if (!paused) return { ok: true, was_paused: false };
+    const { sms_paused: _p, ...rest } = t!.settings;
+    await db.from("tenants").update({ settings: rest }).eq("location_id", c.loc);
+    await db.from("tenant_events").insert({ location_id: c.loc, event: "carrier_block_cleared", detail: { paused, note: a.note ?? null } });
+    return { ok: true, was_paused: true, cleared: paused };
   } },
   // escape hatch
   "hl_request": { description: "Raw HighLevel REST call for anything above doesn't cover. path like /contacts/{id}/notes. locationId is NOT added automatically — include it in query/body where the endpoint needs it (this sub-account's id is in the `locationId` field of locations_get-location).", input: { method: S("GET|POST|PUT|DELETE"), path: S("Path under services.leadconnectorhq.com"), query: S("Query params", "object"), body: S("JSON body", "object") }, required: ["method", "path"], run: (c, a) => hl(c, a.method.toUpperCase(), a.path, a.body, a.query) },
