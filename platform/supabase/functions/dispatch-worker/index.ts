@@ -195,7 +195,7 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       "\n# ghl-operating-rules\n" + rules, "\n# send-gate\n" + sendGate,
       ...kindSkills.map((s, i) => `\n# skill ${i + 1}\n` + s),
       pack ? "\n# trade pack\n" + pack : "",
-      ...Object.entries(fileMap).map(([p, c]) => `\n# /workspace/${p}\n` + c),
+      ...Object.entries(fileMap).filter(([p]) => !/^(a2p-packet\.md|sms-terms\.html|privacy\.html)$/.test(p)).map(([p, c]) => `\n# /workspace/${p}\n` + c),   // A2P artifacts are for Ty, not the model
     ].join("\n");
 
     const SEND = "conversations_send-a-new-message";
