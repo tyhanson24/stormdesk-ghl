@@ -91,6 +91,14 @@ const tools: Record<string, Tool> = {
     if (!r.ok) throw new Error(`dispatch-setup ${r.status}: ${text.slice(0, 500)}`);
     return JSON.parse(text);
   } },
+  // Dispatch platform: owner welcome sequence (W-1 SMS + W-2 email now, W-3 SMS day 3). Code-only, owner-only; waits while mode=test.
+  "dispatch_welcome": { description: "Queue the owner welcome sequence for THIS sub-account (W-1 text + W-2 email, then the day-3 recap). Owner-only onboarding messages from config/welcome-copy.md; the worker holds them while mode=test and sends once the account is in shadow/storm/standard. Call once, right after the golden test PASSES on a client sub-account (never on the template).", input: { location_id: S("Sub-account id (defaults to this one)") }, run: async (c, a) => {
+    const loc = String(a.location_id ?? c.loc);
+    const r = await fetch(`${env("PUBLIC_BASE_URL")}/functions/v1/dispatch-ingest/welcome`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${env("DISPATCH_INTERNAL_KEY")}` }, body: JSON.stringify({ location_id: loc, step: 1, source: "golden-test" }) });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`dispatch-ingest ${r.status}: ${text.slice(0, 300)}`);
+    return JSON.parse(text);
+  } },
   // escape hatch
   "hl_request": { description: "Raw HighLevel REST call for anything above doesn't cover. path like /contacts/{id}/notes. locationId is NOT added automatically — include it in query/body where the endpoint needs it (this sub-account's id is in the `locationId` field of locations_get-location).", input: { method: S("GET|POST|PUT|DELETE"), path: S("Path under services.leadconnectorhq.com"), query: S("Query params", "object"), body: S("JSON body", "object") }, required: ["method", "path"], run: (c, a) => hl(c, a.method.toUpperCase(), a.path, a.body, a.query) },
 };
