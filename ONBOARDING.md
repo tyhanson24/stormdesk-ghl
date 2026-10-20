@@ -8,7 +8,7 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 - Dispatch template sub-account (was "StormDesk"): `LTiwIPoSI1YNEcSyzYzf`
 - Snapshot: "Dispatch v0.1" id `iIvtMHToswxykXgyB0G8` (v3, refreshed 2026-10-19: 10 workflows, 2 pipelines, 67 fields, 16 custom values, 20 tags, form, dashboard, review settings, KB)
 - Intake form: "Dispatch Onboarding" id `PZXXIJxr5BmaXhIubHNc` — https://api.leadconnectorhq.com/widget/form/PZXXIJxr5BmaXhIubHNc
-- Agency token: Office secret `GHL_AGENCY_PIT` (scopes: locations r/w, snapshots r, users r, phonenumbers r, saas/location w). Agency tokens have NO contact/conversation/opportunity scopes — intake still needs a sub-account PIT per client until the Marketplace OAuth app exists.
+- HighLevel auth: the Dispatch gateway (`platform/README.md`). Agency-level calls (create sub-account from snapshot, users, phone numbers): `POST .../dispatch-token {"companyId":"MVaqjpBWfuyQDY1cZjKl"}` with `x-dispatch-key`. Sub-account calls: the `ghl` MCP (gateway) with `locationId`. Office secret `GHL_AGENCY_PIT` is legacy — retire once `setup-customer` uses the broker.
 
 ## Intake form fields (PIVOT contact custom fields, folder "Additional Info")
 | Form label | key |
@@ -27,8 +27,8 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 
 ## The flow
 1. **Call (15 min).** Fill the intake form with the client on the phone, or send them the link. Submission creates a contact in PIVOT tagged `dispatch-onboarding` (WF-00 in PIVOT — to build).
-2. **Sub-account (2 min, Office).** Office creates the sub-account from snapshot `iIvtMHToswxykXgyB0G8` using `GHL_AGENCY_PIT`, named after `company_name`, address/phone/website from the form.
-3. **Token (3 min, Ty).** In the new sub-account: Settings → Private Integrations → "Dispatch Office" with scopes: contacts, conversations, conversations/message, opportunities, calendars, calendars/events, locations/customFields (r), locations/customValues (r/w), locations/tags (r/w), forms (r), locations (r), users (r), workflows (r). Paste into Office (per-client secret `GHL_PIT_{locationId}`).
+2. **Sub-account (2 min, Office).** Office creates the sub-account from snapshot `iIvtMHToswxykXgyB0G8` using an agency token from the broker, named after `company_name`, address/phone/website from the form. The marketplace app auto-installs on the new sub-account.
+3. **Token (0 min).** Gone. The gateway mints a sub-account token from the agency install on first use.
 4. **Number + A2P (10 min, Ty clicks submit).** Office buys one local number via agency token, drafts the A2P packet from the trade pack + intake answers, and opens the registration page. Ty reviews and submits. Standard brand, Low Volume Mixed campaign.
 5. **Setup (Office, unattended).** `setup-customer`: fill the 16 custom values (ALL overwritten — template keys must never survive), create routines R0/R1/R9/R14 and write their URLs/keys back, write company-profile / service-area / do-not-contact from the form, load `/workspace/trades/{trade}.md`, set `mode=test`, add owner user to the sub-account, create owner contact, run `golden-test`, post the report.
 6. **Welcome (automatic on golden PASS).** Owner gets the welcome text + email: brief at 5:50, APPROVE n / NO n / EDIT n, STOP BOTS.
@@ -44,4 +44,4 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 - `setup-customer` skill.
 - WF-00 welcome sequence inside the snapshot (text + email + day-3 recap).
 - A2P packet generator (template in `config/a2p-template.md`).
-- Marketplace OAuth app (removes the per-client token step).
+- ~~Marketplace OAuth app~~ — done (platform/).
