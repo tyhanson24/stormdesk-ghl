@@ -29,7 +29,7 @@ function setupProblems(loc: string, cv: Record<string, string>): string[] {
   const base = env("PUBLIC_BASE_URL");
   const out: string[] = [];
   for (const [k, v] of Object.entries(cv)) if (k !== "review_link" && /REPLACE/i.test(v)) out.push(`${k} still says REPLACE`);   // review_link is set at go-live, not intake-critical
-  for (const k of ["wh_intake", "wh_approval"]) if (cv[k] && !cv[k].startsWith(`${base}/functions/v1/dispatch-ingest/`)) out.push(`${k} does not point at dispatch-ingest`);
+  for (const k of ["wh_intake", "wh_approval", "wh_optout"]) if (cv[k] && !cv[k].startsWith(`${base}/functions/v1/dispatch-ingest/`)) out.push(`${k} does not point at dispatch-ingest`);
   for (const k of ["bot_webhook_key", "bot_webhook_key_intake"]) if (cv[k] && !/^ik_[a-f0-9]{48}$/.test(cv[k])) out.push(`${k} is not a Dispatch ingest key`);
   if (loc !== TEMPLATE_LOCATION && cv.wf02_id === "59c92c05-5fc0-4891-832c-bf3d991c4c6a") out.push("wf02_id is the template's");
   if (loc !== TEMPLATE_LOCATION && /template/i.test(cv.company_name ?? "")) out.push("company_name is the template's");
@@ -95,7 +95,9 @@ function asciiQuotes<T>(v: T): T {
 }
 
 // Every real send lands in outbound_log with HighLevel's messageId so delivery_check can follow it up.
-const STOP_RE = /^\s*(STOP|STOPALL|UNSUBSCRIBE|CANCEL|END|QUIT)\b/i;
+// Opt-out keywords. Strong words (STOP/UNSUBSCRIBE/QUIT) count at the start of a short message ("Stop texting me now");
+// weak words (CANCEL/END) only alone or with one trailing word, so "cancel my appointment tomorrow" is not an opt-out.
+const STOP_RE = /^\s*(?:(?:STOP|STOPALL|UNSUBSCRIBE|QUIT)(?:\s+\w+){0,5}|(?:CANCEL|END)(?:\s+\w+)?)\s*[.!]*\s*$/i;
 async function logSend(db: ReturnType<typeof admin>, loc: string, jobId: string, a: SendArgs, template: string | null, hash: string, r: { text: string; isError: boolean }, redirected: boolean) {
   let messageId: string | null = null;
   try { const j = JSON.parse(r.text); messageId = j.messageId ?? j.id ?? null; } catch { /* non-JSON */ }
@@ -270,7 +272,9 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       const p = job.payload ?? {};
       const cid = p.contact_id ?? p.contactId ?? p.contact?.id;
       if (!cid) { await finish(db, job, run.id, "blocked", steps, inTok, outTok, "optout: no contact_id in payload", null); return; }
-      await recordConsent(db, loc, cid, "opted_out", "stop_keyword", String(p.message ?? p.body ?? "STOP"), job.id, p.phone);
+      const msg = String(p.message ?? p.body ?? "").trim();
+      if (msg && !STOP_RE.test(msg)) { await finish(db, job, run.id, "succeeded", steps, inTok, outTok, `optout ignored: "${msg.slice(0, 60)}" is not a bare opt-out keyword`, null); return; }
+      await recordConsent(db, loc, cid, "opted_out", "stop_keyword", msg || "STOP (keyword match in workflow)", job.id, p.phone);
       await callTool(loc, "contacts_add-tags", { contactId: cid, tags: ["do-not-contact"] });
       await callTool(loc, "contacts_update-contact", { contactId: cid, fields: { dnd: true } });
       await db.from("approvals").update({ status: "blocked", decided_at: new Date().toISOString(), detail: "contact opted out" }).eq("location_id", loc).eq("contact_id", cid).eq("status", "pending");
