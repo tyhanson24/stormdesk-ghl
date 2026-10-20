@@ -58,6 +58,15 @@ async function callTool(loc: string, name: string, args: unknown): Promise<{ tex
   }
 }
 
+// Templates are matched byte-for-byte by the golden test and by owners' eyes; the model likes typographic quotes.
+// Normalize every string the model sends to HighLevel (notes, drafts, messages, names).
+function asciiQuotes<T>(v: T): T {
+  if (typeof v === "string") return v.replace(/[\u2018\u2019\u201A\u2032]/g, "'").replace(/[\u201C\u201D\u201E\u2033]/g, '"').replace(/\u2026/g, "...") as unknown as T;
+  if (Array.isArray(v)) return v.map(asciiQuotes) as unknown as T;
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, asciiQuotes(x)])) as unknown as T;
+  return v;
+}
+
 // ---------- model ----------
 type Msg = { role: "user" | "assistant"; content: any };
 async function claude(system: string, messages: Msg[], tools: any[]) {
@@ -179,6 +188,7 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       const results: any[] = [];
       for (const u of uses) {
         calls++;
+        u.input = asciiQuotes(u.input);
         const ts = Date.now();
         let text = "", isError = false;
         if (calls > MAX_TOOL_CALLS) { text = "Tool budget exhausted. Stop and summarize."; isError = true; }
@@ -216,12 +226,19 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       const ts = Date.now();
       const r = await callTool(loc, "contacts_add-tags", { contactId: job.payload.contact_id, tags: ["storm-lead", "bot-drafted"] });
       log({ tool: "contacts_add-tags", args: { enforced: true, tags: ["storm-lead", "bot-drafted"] }, ok: !r.isError, ms: Date.now() - ts, result_excerpt: r.text.slice(0, 200) });
+      // Facts the worker knows without the model: lead_source (webhook source), storm_event (custom value), and the
+      // follow-up date whenever the draft asks the lead for something (ASK-* template).
+      const p = job.payload ?? {};
+      const fields: { key: string; value: string }[] = [];
+      const src = p.source ?? p.lead_source ?? p.contact_source ?? p.contact?.source;
+      if (src) fields.push({ key: "lead_source", value: String(src) });
+      if (cv.storm_event) fields.push({ key: "storm_event", value: cv.storm_event });
       const askedForInfo = steps.some((s) => /DRAFT:\s*ASK-/i.test(JSON.stringify(s.args ?? "")));
-      if (askedForInfo) {
-        const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+      if (askedForInfo) fields.push({ key: "next_followup_date", value: new Date(Date.now() + 864e5).toISOString().slice(0, 10) });
+      if (fields.length) {
         const t2 = Date.now();
-        const r2 = await callTool(loc, "contacts_update-contact", { contactId: job.payload.contact_id, fields: { customFields: [{ key: "next_followup_date", value: tomorrow }] } });
-        log({ tool: "contacts_update-contact", args: { enforced: true, next_followup_date: tomorrow }, ok: !r2.isError, ms: Date.now() - t2, result_excerpt: r2.text.slice(0, 200) });
+        const r2 = await callTool(loc, "contacts_update-contact", { contactId: p.contact_id, fields: { customFields: fields } });
+        log({ tool: "contacts_update-contact", args: { enforced: true, fields }, ok: !r2.isError, ms: Date.now() - t2, result_excerpt: r2.text.slice(0, 200) });
       }
     }
 
