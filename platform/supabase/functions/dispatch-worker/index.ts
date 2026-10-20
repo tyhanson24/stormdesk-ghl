@@ -55,7 +55,14 @@ async function claude(system: string, messages: Msg[], tools: any[]) {
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": env("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: MODEL(), max_tokens: 4096, system, messages, tools, tool_choice: { type: "auto" } }),
+    // Prompt caching: the skill bundle (system) and the tool list are identical on every turn of a job — cache them.
+    body: JSON.stringify({
+      model: MODEL(), max_tokens: 4096,
+      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+      messages,
+      tools: tools.map((t, i) => (i === tools.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t)),
+      tool_choice: { type: "auto" },
+    }),
     signal: AbortSignal.timeout(120_000),
   });
   if (!r.ok) throw new Error(`model ${r.status}: ${(await r.text()).slice(0, 500)}`);
@@ -99,7 +106,7 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     const pack = trade ? await repoFile(`trades/${trade}.md`) : "";
 
     const system = [
-      `You are Dispatch, the operations agent for one home-service contractor's HighLevel sub-account (locationId ${loc}). You act ONLY through the tools provided. There is no filesystem: the company files you would read from /workspace are included below. Mode and flags come from the custom values already read: mode=${cv.mode ?? "?"}, bots_enabled=${cv.bots_enabled ?? "?"}, trade=${trade || "?"}, company_name=${cv.company_name ?? "?"}. Owner contact id: ${settings.owner_contact_id ?? "unknown (search by owner_phone custom value if needed)"}. Timezone: ${settings.timezone ?? "America/Chicago"}. Now: ${new Date().toISOString()}.`,
+      `You are Dispatch, the operations agent for one home-service contractor's HighLevel sub-account (locationId ${loc}). You act ONLY through the tools provided. There is no filesystem: the company files you would read from /workspace are included below. Mode and flags come from the custom values already read: mode=${cv.mode ?? "?"}, bots_enabled=${cv.bots_enabled ?? "?"}, trade=${trade || "?"}, company_name=${cv.company_name ?? "?"}. Owner contact id: ${settings.owner_contact_id ?? "unknown (search by owner_phone custom value if needed)"}. Owner user id for task assignedTo (required by HighLevel): ${settings.owner_user_id ?? "unknown — call users_get-users once"}. Timezone: ${settings.timezone ?? "America/Chicago"}. Now: ${new Date().toISOString()}.`,
       `Every send through conversations_send-a-new-message is checked by a code-level send gate before it reaches HighLevel; if it comes back BLOCKED, write the BLOCKED note as the send-gate skill says and move on — never retry with different wording or another channel. Pass "template" (template id) and, for approved drafts, "approval" on every send call.`,
       `Be economical: at most ${MAX_TOOL_CALLS} tool calls. When done, end with a final message whose last paragraph starts with "SUMMARY:" and has 3–8 lines: what you read, what you changed, what's waiting on approval, what blocked you.`,
       "\n# ghl-operating-rules\n" + rules, "\n# send-gate\n" + sendGate,
@@ -126,7 +133,8 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     for (let turn = 0; turn < MAX_TOOL_CALLS + 5; turn++) {
       if (Date.now() - t0 > JOB_BUDGET_MS) throw new Error("job time budget exceeded");
       const resp = await claude(system, messages, tools);
-      inTok += resp.usage?.input_tokens ?? 0; outTok += resp.usage?.output_tokens ?? 0;
+      inTok += (resp.usage?.input_tokens ?? 0) + (resp.usage?.cache_creation_input_tokens ?? 0) + Math.round((resp.usage?.cache_read_input_tokens ?? 0) / 10); // cache reads billed at 10%
+      outTok += resp.usage?.output_tokens ?? 0;
       messages.push({ role: "assistant", content: resp.content });
       const uses = (resp.content as any[]).filter((b) => b.type === "tool_use");
       finalText = (resp.content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n") || finalText;
