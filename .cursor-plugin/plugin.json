@@ -1,6 +1,6 @@
 {
   "name": "dispatch-ghl",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Dispatch: Grok Bot skills + HighLevel MCP for home-service companies (roofing, fencing, gutters, screen enclosures, tree service, restoration — trade packs). Storm-surge intake, triage, estimates, claims, permits, follow-up — and day-to-day ops after the storm.",
   "author": { "name": "Pivot Solutions", "email": "ty@pivotsolutions.io" },
   "license": "MIT",
@@ -10,17 +10,17 @@
   "variables": {
     "type": "object",
     "properties": {
-      "GHL_PIT": {
+      "DISPATCH_KEY": {
         "type": "string",
-        "title": "HighLevel Private Integration Token",
-        "description": "Sub-account Private Integration Token (Settings → Private Integrations). Scopes: contacts, conversations, conversation messages, opportunities, calendars, calendar events, custom fields (view), custom values (view+edit), tags (view+edit), forms, locations, users (view), workflows (view)."
+        "title": "Dispatch gateway key",
+        "description": "The Dispatch platform key (DISPATCH_INTERNAL_KEY). The gateway swaps it for a HighLevel token per request; the bot never holds a HighLevel token. Same key for every sub-account."
       },
       "GHL_LOCATION_ID": {
         "type": "string",
         "title": "HighLevel Location (sub-account) ID",
-        "description": "The sub-account this plugin install is bound to. One install per contractor sub-account."
+        "description": "The sub-account this plugin install is bound to. One install per contractor sub-account. The agency's Dispatch marketplace install must cover it (automatic for sub-accounts created from the snapshot)."
       }
     },
-    "required": ["GHL_PIT", "GHL_LOCATION_ID"]
+    "required": ["DISPATCH_KEY", "GHL_LOCATION_ID"]
   }
 }
