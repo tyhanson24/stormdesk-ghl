@@ -4,27 +4,34 @@ Private HighLevel Marketplace app. Only Ty's agency installs it; clients are sub
 
 ## Pieces
 - `supabase/migrations/0001_tenants.sql` — `tenants` (encrypted tokens, one row per install) + `tenant_events` (audit).
-- `supabase/functions/ghl-oauth` — `/install` (redirect to HighLevel consent), `/callback` (code → tokens → tenants), `/webhook` (INSTALL/UNINSTALL events).
-- `supabase/functions/ghl-token` — token broker. Office / worker POST `{locationId}` with `x-dispatch-key` and get a fresh access token. Refreshes automatically; mints sub-account tokens from the agency install when no direct install exists.
+- `supabase/functions/dispatch-oauth` — `/install` (redirect to HighLevel consent), `/callback` (code → tokens → tenants), `/webhook` (INSTALL/UNINSTALL events).
+- `supabase/functions/dispatch-token` — token broker. Office / worker POST `{locationId}` with `x-dispatch-key` and get a fresh access token. Refreshes automatically; mints sub-account tokens from the agency install when no direct install exists.
 
 ## One-time setup
 1. Supabase project `Dispatch` (us-east-1). Apply the migration. Deploy both functions with `verify_jwt=false` (they authenticate themselves).
 2. Function secrets: `GHL_CLIENT_ID`, `GHL_CLIENT_SECRET`, `PUBLIC_BASE_URL` (`https://<ref>.supabase.co`), `DISPATCH_INTERNAL_KEY` (random 32+ chars). `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` are injected automatically.
-3. marketplace.gohighlevel.com → My Apps → Create App:
-   - Name `Dispatch` · Type **Private** · Target user **Sub-account** · Who can install **Both Agency & Sub-account** · Listing **White-label**
-   - Auth → Scopes: the list in `functions/_shared/ghl.ts` (`SCOPES`)
-   - Redirect URL: `https://<ref>.supabase.co/functions/v1/ghl-oauth/callback`
-   - Webhook URL (optional now): `https://<ref>.supabase.co/functions/v1/ghl-oauth/webhook`
+3. marketplace.gohighlevel.com (separate developer login, not the agency login) → My Apps → Create App:
+   - Name `Dispatch` · Type **Private** · Target user **Sub-account** · Who can install **Agency only** · Listing **White-label**
+   - Auth → Scopes: the list in `functions/_shared/ghl.ts` (`SCOPES`, 25). Save button sits off-screen below 1200px wide.
+   - Redirect URL: `https://<ref>.supabase.co/functions/v1/dispatch-oauth/callback` — white-label rule: the URL must not contain "ghl" or "highlevel".
+   - Webhook URL (optional now): `https://<ref>.supabase.co/functions/v1/dispatch-oauth/webhook`
    - Manage → Secrets → Client Keys → Add → copy Client ID + Secret into the function secrets above.
-4. Install on the agency once: open `https://<ref>.supabase.co/functions/v1/ghl-oauth/install?kind=agency`, pick the PIVOT agency, approve. That single install covers every sub-account under it.
+   - Manage → Versions → ⋮ on the draft → **Publish**. Private apps skip review and go live immediately; until this is done OAuth returns "No integration found".
+4. Install on the agency once: open `https://<ref>.supabase.co/functions/v1/dispatch-oauth/install?kind=agency`, approve, and on the last screen keep **Install under all locations** and tick **Enable automatic installation to future locations**. That single install covers every sub-account under it, including ones created later by `setup-customer`.
 5. Office: store `DISPATCH_INTERNAL_KEY` and `DISPATCH_TOKEN_URL` as secrets. `setup-customer` and every routine fetch tokens with:
    `POST $DISPATCH_TOKEN_URL  {"locationId": "..."}  header x-dispatch-key` → use `access_token` as the Bearer for both the HighLevel MCP and REST.
 
 ## Per-client (zero steps)
-None. `setup-customer` creates the sub-account from the snapshot with the agency token, then asks `ghl-token` for a location token; the broker mints it from the agency install.
+None. `setup-customer` creates the sub-account from the snapshot with the agency token, then asks `dispatch-token` for a location token; the broker mints it from the agency install.
+
+## Status (2026-10-20)
+- Live: project `jlkkvrvytvydkcahezob`, both functions deployed, app `6ad6bfa4f15bd83fc063fc73` published (private), agency install done (company `MVaqjpBWfuyQDY1cZjKl`, 25 scopes).
+- Verified: broker minted a token for the Dispatch sub-account from the agency install (`source: location_token`), token read the location + contacts (200), second call served from cache; bad key → 401.
+- `ghl-oauth` / `ghl-token` are 410 stubs — delete from the dashboard.
+- TODO: callback page is served as `text/plain` by the gateway despite the `text/html` header (cosmetic); delete the `company_id='TEST'` tenants row (marked uninstalled); webhook signature check.
 
 ## Security notes
-- Tokens are pgsodium-encrypted at rest; only the service role reads `decrypted_tenants`.
+- Tokens are pgsodium-encrypted at rest with key `dispatch_tenant_tokens` (created by the migration — the placeholder zero key id does not exist and breaks every insert); only the service role reads `decrypted_tenants`.
 - Webhook signature verification (HighLevel `x-wh-signature`) is a TODO before go-live.
 - Private app cap: 5 agencies. We use 1. If other agencies ever need it, that is the Public-listing decision, not a code change.
 - Rotate: delete the old sub-account PIT (`pit-us-737e…`) and the chat-pasted agency PIT once this is live.
