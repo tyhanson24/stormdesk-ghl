@@ -98,15 +98,14 @@ export async function upsertTenant(db: SupabaseClient, t: TokenResponse, source:
     last_error: null,
     uninstalled_at: null,
   };
-  const onConflict = kind === "location" ? "location_id" : undefined;
-  let q = db.from("tenants").upsert(row, onConflict ? { onConflict } : undefined).select("id").single();
-  if (kind === "agency") {
-    // one agency row per company_id: update if exists, else insert
-    const { data: existing } = await db.from("tenants").select("id").eq("kind", "agency").eq("company_id", row.company_id).maybeSingle();
-    q = existing
-      ? db.from("tenants").update(row).eq("id", existing.id).select("id").single()
-      : db.from("tenants").insert(row).select("id").single();
-  }
+  // Never upsert (ON CONFLICT DO UPDATE): pgsodium's BEFORE INSERT trigger encrypts the proposed row, then DO UPDATE
+  // re-encrypts EXCLUDED → double-encrypted tokens (bit the template on 2026-10-21). Select, then update or insert.
+  const { data: existing } = kind === "location"
+    ? await db.from("tenants").select("id").eq("location_id", row.location_id).maybeSingle()
+    : await db.from("tenants").select("id").eq("kind", "agency").eq("company_id", row.company_id).maybeSingle();
+  const q = existing
+    ? db.from("tenants").update(row).eq("id", existing.id).select("id").single()
+    : db.from("tenants").insert(row).select("id").single();
   const { data, error } = await q;
   if (error) throw error;
   await db.from("tenant_events").insert({ tenant_id: data.id, location_id: row.location_id, company_id: row.company_id, event: source, detail: { scopes: row.scopes, user_type: row.user_type } });
