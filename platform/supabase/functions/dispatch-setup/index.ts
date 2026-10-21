@@ -9,7 +9,7 @@
 //     snapshot_id   — default SNAPSHOT_ID below;  company_id — default PIVOT agency
 //     dry_run (bool) — validate + plan only
 // Does, in order: create sub-account from snapshot (agency token) → wait for the snapshot to land → tenant row +
-// ingest key → owner contact → custom values (all 17, template keys never survive) → tenant_files → summary of
+// ingest key → owner contact → custom values (all 18, template keys never survive) → tenant_files → summary of
 // what is left for Ty (owner user, phone number + A2P, golden test, welcome).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { admin, env, json, HL_VERSION } from "../_shared/ghl.ts";
@@ -45,7 +45,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(
 const e164 = (p: string) => { const d = String(p ?? "").replace(/\D/g, ""); return d.length === 10 ? `+1${d}` : d.length === 11 && d.startsWith("1") ? `+${d}` : String(p ?? "").trim(); };
 const zips = (v: unknown): string[] => (Array.isArray(v) ? v : String(v ?? "").split(/[\s,;]+/)).map((z) => String(z).trim()).filter((z) => /^\d{5}$/.test(z));
 
-function files(b: any, ownerContactId: string, locName: string) {
+function files(b: any, ownerContactId: string, locName: string, packCategories = "") {
   const zipList = zips(b.service_zips);
   const trade = String(b.trade).toLowerCase();
   const company = String(b.company_name).trim();
@@ -109,7 +109,57 @@ Out of area: reply with the out-of-area template, tag out-of-area, no opportunit
 - Never mention financing terms.
 `,
     "do-not-contact.csv": `phone,email,reason\n`,
+    // Price book: the owner fills unit prices; estimate-drafting never prices a line that is blank here.
+    "price-book.md": `# Price book — ${company}
+Owner-maintained. One line per item: **item | unit | price | notes**. Blank price = the bot leaves it blank and flags it.
+Categories come from the ${trade} trade pack; add rows, rename freely. Storm-mode adders go in their own section and are only applied when listed.
+
+## Line items
+${(packCategories || "service call, repair, replacement").split(/,\s*/).map((c) => `| ${c.trim()} | each | | |`).join("\n")}
+
+## Storm-mode adders (optional)
+| item | unit | price | notes |
+| debris haul surcharge | job | | only when the owner lists it |
+
+## Terms
+deposit_percent: 30
+payment_terms: balance due on completion
+warranty: per estimate-template.md
+`,
+    "estimate-template.md": `# Estimate template — ${company}
+Layout the bot fills from the estimator's numbers and price-book.md. Edit wording freely; keep the headings.
+
+**${company}** · ${address} · ${e164(b.owner_phone)}${b.license_number ? ` · Lic. ${b.license_number}` : ""}
+Estimate for: {customer_name} — {property_address}
+Date: {date} · Valid for 30 days
+
+## Scope
+{scope paragraph from the estimator's notes}
+
+## Line items
+| item | qty | unit | unit price | line total |
+{lines}
+**Total: {total}** · Deposit due at signing: {deposit_percent}% ({deposit})
+
+## Schedule
+Work is scheduled after signed approval, deposit, and (where required) permit approval and material delivery. Current lead time: {current_lead_time}.
+
+## Warranty
+Workmanship warranty: {warranty_years} year(s). Manufacturer warranties pass through per product.
+
+## Not included
+{exclusions, from the estimator's notes}
+
+{insurance_note if insurance_claim = Yes: "This estimate is prepared to match the adjuster's scope where possible; supplements for hidden damage will be submitted to your carrier."}
+
+Accepted by: ______________________  Date: ________
+`,
   };
+}
+
+const SKILLS_BASE = () => `https://raw.githubusercontent.com/tyhanson24/stormdesk-ghl/${Deno.env.get("SKILLS_REF") ?? "main"}`;
+async function packCategories(trade: string): Promise<string> {
+  try { const r = await fetch(`${SKILLS_BASE()}/trades/${trade}.md`); if (!r.ok) return ""; const t = await r.text(); return t.match(/^price_book_categories:\s*(.+)$/m)?.[1]?.trim() ?? ""; } catch { return ""; }
 }
 
 Deno.serve(async (req) => {
@@ -130,7 +180,7 @@ Deno.serve(async (req) => {
   const plan = {
     create_sub_account: !b.location_id,
     snapshot_id: b.snapshot_id ?? SNAPSHOT_ID,
-    custom_values: ["company_name", "owner_phone", "license_number", "local_address", "review_link", "storm_event", "bot_webhook_key", "bot_webhook_key_intake", "wh_intake", "wh_estimate", "wh_crew_done", "wh_approval", "wh_optout", "bots_enabled", "mode", "trade", "wf02_id"],
+    custom_values: ["company_name", "owner_phone", "license_number", "local_address", "review_link", "storm_event", "bot_webhook_key", "bot_webhook_key_intake", "wh_intake", "wh_estimate", "wh_crew_done", "wh_approval", "wh_optout", "wh_reply", "bots_enabled", "mode", "trade", "wf02_id"],
     mode: "test",
   };
   if (b.dry_run) return json(200, { dry_run: true, plan, files: Object.keys(files(b, "(owner)", "(new)")) });
@@ -218,6 +268,7 @@ Deno.serve(async (req) => {
       wh_crew_done: `${base}/functions/v1/dispatch-ingest/crew_done`,
       wh_approval: `${base}/functions/v1/dispatch-ingest/approval_reply`,
       wh_optout: `${base}/functions/v1/dispatch-ingest/optout`,
+      wh_reply: `${base}/functions/v1/dispatch-ingest/inbound_reply`,
       bots_enabled: "true",
       mode: "test",
       trade: String(b.trade).toLowerCase(),
@@ -236,8 +287,12 @@ Deno.serve(async (req) => {
     log.push({ step: "custom_values", ok: cvBad.length === 0, detail: cvBad.length ? cvResult : `${Object.keys(want).length} written` });
 
     // 7. tenant_files
-    const f = files(b, ownerContactId, String(b.company_name).trim());
+    const f = files(b, ownerContactId, String(b.company_name).trim(), await packCategories(String(b.trade).toLowerCase()));
+    const { data: haveFiles } = await db.from("tenant_files").select("path").eq("location_id", loc);
+    const have = new Set((haveFiles ?? []).map((x: any) => x.path));
     for (const [path, content] of Object.entries(f)) {
+      // Owner-edited files (price book, estimate template) are never overwritten on a re-run; the four core files are.
+      if (have.has(path) && (path === "price-book.md" || path === "estimate-template.md")) continue;
       const { error } = await db.from("tenant_files").upsert({ location_id: loc, path, content, updated_at: new Date().toISOString() }, { onConflict: "location_id,path" });
       if (error) throw error;
     }
