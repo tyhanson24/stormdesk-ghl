@@ -5,7 +5,7 @@ description: Daily pre-flight (routine R0, 5:30 AM local) that verifies the sub-
 
 # Health check
 
-Runs before the brief so the brief can say what is broken. Read-only except for the two writes at the end. Never sends to homeowners.
+**Runs as code in the cloud worker** (`dispatch-worker` → `healthCheck`), not as a model run: zero tokens, same checks. This file documents what it checks so Office and the daily brief can explain a failure. Runs before the brief so the brief can say what is broken. Never sends to homeowners.
 
 ## Checks
 1. **Connection** — `locations_get-location` returns this sub-account; `opportunities_get-pipelines` lists `Storm Response` and `Standard Jobs` with all stages named in `ghl-operating-rules`. Missing → `pipelines`.
@@ -17,14 +17,13 @@ Runs before the brief so the brief can say what is broken. Read-only except for 
 6. **Workflows** — WF-01, WF-02, WF-11 are published (REST `GET /workflows/`). Fail → `workflows`.
 7. **Approvals** — count tasks titled `Approve:` older than 24 h and not completed. > 0 → `stale_approvals (n)` (warning).
 8. **Expired drafts** — `DRAFT:` notes older than 48 h → convert to `EXPIRED:` and re-stage if the lead is still open. Report count.
-9. **Usage** — Grok Bot usage remaining this week (if visible). < 20% → `usage_low` (warning).
-10. **Logins** — any browser login the bots depend on (carrier portal, county permit site, GBP) that failed in the last 24 h → `login_expired ({site})`.
+9. **Usage** — model spend per sub-account is metered in `usage_daily`; the platform monitor raises `budget` when a day passes $25.
+10. **Logins** — (future: permit portals) any browser login the bots depend on that failed in the last 24 h → `login_expired ({site})`.
 
 ## Output
 - Write custom value `bot_last_health` = `{ISO timestamp} {OK|FAIL} {comma-separated failing checks}`.
-- Ping the dead-man URL in company-profile (`deadman_url`) with `GET {url}` on OK, or `GET {url}/fail` on FAIL. If the value is blank, skip and report `deadman_not_configured`.
-- Post the one-line result in chat. The daily brief reads `bot_last_health` for its BLOCKED line.
-- If any hard check fails (`pipelines`, `schema`, `custom_values`, `company_files`, `workflows`): also email the agency address in company-profile (`agency_email`) with the failing checks. This is the only outbound this skill may do.
+- Log `tenant_events` `health:ok` / `health:fail` with the lists; the platform monitor turns a `health:fail` into a `health_fail` alert to Ty (email + SMS) and clears it when the next check passes.
+- The daily brief gets the line verbatim for its BLOCKED line.
 
 ## Hard vs warning
 Hard failures stop R1/R14 from acting on real leads (they still log). Warnings do not stop anything.
