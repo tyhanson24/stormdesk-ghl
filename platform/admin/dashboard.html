@@ -1,0 +1,372 @@
+<title>Dispatch Console</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column of operational panels, summary strip first, detail drawers slide in from the right. */
+:root {
+  --bg: #f5f6f4; --panel: #ffffff; --fg: #1c2321; --muted: #5f6b67; --line: #d9ddd9; --line-strong: #b9c0bb;
+  --accent: #0f6e68; --accent-ink: #ffffff; --ok: #1f7a4d; --warn: #9a5b00; --crit: #b3261e; --info: #2b5fa8;
+  --ok-bg: #e3f3ea; --warn-bg: #fdf1dd; --crit-bg: #fbe4e2; --info-bg: #e5edf9; --chip: #eceeec;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #131716; --panel: #1b201f; --fg: #e6eae8; --muted: #98a39f; --line: #2b3331; --line-strong: #3d4745;
+  --accent: #4fb5ad; --accent-ink: #0d1413; --ok: #5fc78f; --warn: #e2a84a; --crit: #f07c74; --info: #7fa6e6;
+  --ok-bg: #16302a; --warn-bg: #332a14; --crit-bg: #3a1f1d; --info-bg: #1c2a40; --chip: #262d2b; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #131716; --panel: #1b201f; --fg: #e6eae8; --muted: #98a39f; --line: #2b3331; --line-strong: #3d4745;
+  --accent: #4fb5ad; --accent-ink: #0d1413; --ok: #5fc78f; --warn: #e2a84a; --crit: #f07c74; --info: #7fa6e6;
+  --ok-bg: #16302a; --warn-bg: #332a14; --crit-bg: #3a1f1d; --info-bg: #1c2a40; --chip: #262d2b; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--fg); font: 14px/1.45 var(--sans); padding-block: 0 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)) }
+h1, h2, h3 { margin: 0; text-wrap: balance; font-weight: 600 }
+h1 { font-size: 18px } h2 { font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted) }
+a { color: var(--accent) }
+button, input { font: inherit; color: inherit }
+button { background: var(--panel); border: 1px solid var(--line-strong); border-radius: 6px; padding: 6px 10px; cursor: pointer }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent) }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums }
+.mono { font-family: var(--mono); font-size: 12px }
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 20px }
+header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding-block: 16px 4px; border-bottom: 1px solid var(--line) }
+header.top .spacer { flex: 1 }
+.updated { color: var(--muted); font-size: 12px }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-width: 0 }
+.panel > h2 { margin-bottom: 10px }
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel); display: grid; gap: 2px }
+.tile .label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted) }
+.tile .value { font-size: 22px; font-weight: 600 }
+.tile .sub { font-size: 12px; color: var(--muted) }
+.tile.ok { border-left: 4px solid var(--ok) } .tile.warn { border-left: 4px solid var(--warn) } .tile.crit { border-left: 4px solid var(--crit) } .tile.quiet { border-left: 4px solid var(--line-strong) }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; background: var(--chip); color: var(--fg) }
+.pill.ok { background: var(--ok-bg); color: var(--ok) } .pill.warn { background: var(--warn-bg); color: var(--warn) } .pill.crit { background: var(--crit-bg); color: var(--crit) } .pill.info { background: var(--info-bg); color: var(--info) }
+.tablewrap { overflow-x: auto }
+table { border-collapse: collapse; width: 100%; font-size: 13px }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap }
+th { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600 }
+td.r, th.r { text-align: right }
+tr.click { cursor: pointer } tr.click:hover td { background: var(--chip) }
+.sub { color: var(--muted); font-size: 12px }
+.alerts { display: grid; gap: 8px }
+.alert { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px }
+.alert.crit { border-left: 4px solid var(--crit) } .alert.warn { border-left: 4px solid var(--warn) } .alert.info { border-left: 4px solid var(--info) }
+.alert .title { font-weight: 500 }
+.empty { color: var(--muted); padding: 8px 0 }
+.chart { width: 100%; height: auto; display: block }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin-top: 6px }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px }
+.gate { max-width: 520px; margin: 48px auto; display: grid; gap: 12px }
+.gate input { width: 100%; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); font-family: var(--mono) }
+.err { color: var(--crit); font-size: 13px }
+.drawer { position: fixed; top: env(safe-area-inset-top, 0px); right: 0; bottom: 0; width: min(760px, 100%); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.18); overflow-y: auto; z-index: 20; padding-block: 16px 40px; padding-left: 16px; padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 16px; align-content: start }
+.drawer header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap }
+.drawer header h1 { font-size: 16px } .drawer header .spacer { flex: 1 }
+.scrim { position: fixed; inset: 0; background: rgba(0,0,0,.25); z-index: 19 }
+.steps { display: grid; gap: 6px }
+.step { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 12px }
+.step.bad { border-left: 3px solid var(--crit) } .step.good { border-left: 3px solid var(--ok) }
+.step pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 11px; color: var(--muted); max-height: 160px; overflow: auto }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 13px } .kv div:nth-child(odd) { color: var(--muted) }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap } .tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent) }
+.toast { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 6px; font-size: 13px; z-index: 30 }
+@media (prefers-reduced-motion: no-preference) { .drawer { animation: slide .18s ease-out } @keyframes slide { from { transform: translateX(24px); opacity: 0 } } }
+@media (max-width: 600px) { .tile .value { font-size: 18px } header.top h1 { font-size: 16px } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>Dispatch Console</h1>
+    <span class="updated" id="updated">not loaded</span>
+    <span class="spacer"></span>
+    <label class="sub" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="auto" checked> auto-refresh 60 s</label>
+    <button id="refresh">Refresh</button>
+  </header>
+
+  <section class="gate" id="gate">
+    <h2>Connecting</h2>
+    <p class="sub" id="gatemsg">Reading the Dispatch database through your Supabase connector. The first time, claude.ai asks you to allow this page to use it; everything here is read-only SQL on the platform's views.</p>
+    <div class="err" id="gateerr" hidden></div>
+    <div><button class="primary" id="retry" hidden>Try again</button></div>
+  </section>
+
+  <div id="app" hidden style="display:grid;gap:20px">
+    <section class="strip" id="strip"></section>
+
+    <section class="panel">
+      <h2>Open alerts</h2>
+      <div class="alerts" id="alerts"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Sub-accounts</h2>
+      <div class="tablewrap"><table id="tenants"></table></div>
+      <p class="sub" style="margin:8px 0 0">Click a row for runs, sends, approvals and consents. Cost is the model estimate at list price (Sonnet 4.5, cache reads at 10%). “Today” is UTC.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Model spend, last 7 days</h2>
+      <svg class="chart" id="chart" viewBox="0 0 720 200" role="img" aria-label="Model spend per day, stacked by sub-account"></svg>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Recent failed / blocked runs</h2>
+      <div class="tablewrap"><table id="failures"></table></div>
+    </section>
+
+    <section class="panel">
+      <h2>Alert routing</h2>
+      <div class="kv" id="routing"></div>
+      <p class="sub" style="margin:8px 0 0">Change with SQL on <span class="mono">platform_settings</span> (key <span class="mono">alerts</span>): location_id, contact_id, channels, min_severity, renotify_minutes. Mode / bots values are mirrored from HighLevel by the monitor every 5 minutes.</p>
+    </section>
+  </div>
+</div>
+
+<div id="drawerhost"></div>
+
+<script>
+(() => {
+const PROJECT = "jlkkvrvytvydkcahezob";
+const SERVER = "Supabase";
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmt$ = (n) => "$" + Number(n || 0).toFixed(2);
+const ago = (iso) => { if (!iso) return "never"; const s = Math.max(0, (Date.now() - new Date(iso)) / 1000); return s < 90 ? Math.round(s) + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
+const when = (iso) => iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—";
+let timer = null, data = null, mcp = null;
+const sqlLit = (v) => "'" + String(v).replace(/'/g, "''") + "'";
+const idOk = (v) => /^[A-Za-z0-9]{10,40}$/.test(String(v));
+
+// The connector wraps rows as text inside <untrusted-data-…> tags; pull the JSON back out.
+function rows(result) {
+  let p = result && result.payload !== undefined ? result.payload : result;
+  if (typeof p === "string") { try { p = JSON.parse(p); } catch { /* plain text */ } }
+  if (Array.isArray(p)) return p;
+  if (p && typeof p === "object" && Array.isArray(p.rows)) return p.rows;
+  if (p && typeof p === "object" && typeof p.result === "string") p = p.result;   // Supabase connector: {result: "…<untrusted-data>[rows]…"}
+  const text = typeof p === "string" ? p : (result?.content?.[0]?.text ?? "");
+  const m = text.match(/<untrusted-data-[^>]*>\s*([\[{][\s\S]*?)\s*<\/untrusted-data-/);   // the preamble mentions the tag too; anchor on the JSON start
+  const body = m ? m[1] : text;
+  try { const j = JSON.parse(body); return Array.isArray(j) ? j : j.rows ?? [j]; } catch { throw new Error("Unexpected SQL result shape: " + body.slice(0, 120)); }
+}
+async function sql(query, opts = {}) {
+  if (!mcp) throw Object.assign(new Error("Supabase connector not available in this view"), { code: "not_granted" });
+  const r = await mcp.callTool(SERVER, "execute_sql", { project_id: PROJECT, query }, { cache: opts.fresh ? { refresh: true } : false });
+  return rows(r);
+}
+const OVERVIEW_SQL = `with today as (select (now() at time zone 'UTC')::date d),
+t as (select t.location_id, t.status, t.expires_at, t.last_refresh_at, t.last_error, t.settings, c.mode, c.bots_enabled, c.company_name as cv_company, c.trade as cv_trade, c.error as cv_error, c.checked_at
+      from tenants t left join tenant_cv c on c.location_id = t.location_id where t.kind = 'location' and t.location_id is not null),
+u as (select * from usage_daily where day >= (select d from today) - 6)
+select json_build_object(
+  'now', now(),
+  'queue', (select row_to_json(q) from queue_status q),
+  'agency', (select json_build_object('company_id', company_id, 'expires_at', expires_at, 'last_error', last_error) from tenants where kind='agency' and status='installed' limit 1),
+  'tenants', (select coalesce(json_agg(json_build_object(
+      'location_id', t.location_id, 'company', coalesce(t.settings->>'company_name', t.cv_company, t.location_id), 'status', t.status, 'trade', coalesce(t.settings->>'trade', t.cv_trade),
+      'mode', t.mode, 'bots_enabled', case when t.bots_enabled then 'true' else 'false' end, 'cv_error', t.cv_error, 'cv_checked_at', t.checked_at,
+      'token', json_build_object('expires_at', t.expires_at, 'last_refresh_at', t.last_refresh_at, 'last_error', t.last_error),
+      'compliance', json_build_object('a2p', (select row_to_json(a) from a2p_registrations a where a.location_id = t.location_id),
+         'numbers', (select coalesce(json_agg(json_build_object('number', n.number, 'kind', n.kind, 'verified', n.verified, 'status', n.status, 'purpose', n.purpose)), '[]'::json) from numbers n where n.location_id = t.location_id),
+         'sms_paused', t.settings->'sms_paused', 'sms_number', t.settings->>'sms_number'),
+      'pending_approvals', (select count(*) from approvals a where a.location_id = t.location_id and a.status = 'pending'),
+      'today', (select json_build_object('runs', coalesce(sum(runs),0), 'failed', coalesce(sum(runs_failed),0), 'cost', coalesce(sum(model_cost_usd),0), 'sent', coalesce(sum(sent),0), 'shadow', coalesce(sum(shadow),0), 'blocked', coalesce(sum(blocked),0), 'undelivered', coalesce(sum(undelivered),0)) from u where u.location_id = t.location_id and u.day = (select d from today)),
+      'week', (select json_build_object('runs', coalesce(sum(runs),0), 'failed', coalesce(sum(runs_failed),0), 'cost', coalesce(sum(model_cost_usd),0), 'sent', coalesce(sum(sent),0), 'shadow', coalesce(sum(shadow),0), 'blocked', coalesce(sum(blocked),0), 'undelivered', coalesce(sum(undelivered),0), 'input_tokens', coalesce(sum(input_tokens),0), 'output_tokens', coalesce(sum(output_tokens),0)) from u where u.location_id = t.location_id),
+      'a2p_packet_at', t.settings->>'a2p_packet_at') order by t.location_id), '[]'::json) from t),
+  'alerts', (select coalesce(json_agg(row_to_json(a) order by a.first_seen desc), '[]'::json) from platform_alerts a where a.resolved_at is null),
+  'failures', (select coalesce(json_agg(json_build_object('id', r.id, 'job_id', r.job_id, 'attempt', r.attempt, 'started_at', r.started_at, 'finished_at', r.finished_at, 'status', r.status, 'error', r.error, 'summary', r.summary, 'kind', j.kind, 'location_id', j.location_id) order by r.started_at desc), '[]'::json)
+                from (select * from job_runs where status in ('failed','blocked') order by started_at desc limit 15) r join jobs j on j.id = r.job_id),
+  'usage', (select coalesce(json_agg(row_to_json(u) order by u.day), '[]'::json) from u),
+  'settings', (select coalesce(json_agg(json_build_object('key', key, 'value', value, 'updated_at', updated_at)), '[]'::json) from platform_settings)
+) as overview`;
+const TENANT_SQL = (loc) => `select json_build_object(
+  'location_id', ${sqlLit(loc)},
+  'tenant', (select json_build_object('status', status, 'expires_at', expires_at, 'last_refresh_at', last_refresh_at, 'last_error', last_error, 'scopes', scopes, 'settings', (settings - 'ingest_key' - 'ein')) from tenants where location_id = ${sqlLit(loc)}),
+  'custom_values', (select custom_values from tenant_cv where location_id = ${sqlLit(loc)}),
+  'runs', (select coalesce(json_agg(json_build_object('id', r.id, 'job_id', r.job_id, 'attempt', r.attempt, 'started_at', r.started_at, 'finished_at', r.finished_at, 'status', r.status, 'input_tokens', r.input_tokens, 'output_tokens', r.output_tokens, 'summary', r.summary, 'error', r.error, 'kind', j.kind) order by r.started_at desc), '[]'::json)
+            from (select r.* from job_runs r join jobs j on j.id = r.job_id where j.location_id = ${sqlLit(loc)} order by r.started_at desc limit 40) r join jobs j on j.id = r.job_id),
+  'sends', (select coalesce(json_agg(row_to_json(s) order by s.created_at desc), '[]'::json) from (select id, created_at, contact_id, channel, template, verdict, detail, delivery_status, delivery_error, from_number from outbound_log where location_id = ${sqlLit(loc)} order by created_at desc limit 60) s),
+  'approvals', (select coalesce(json_agg(row_to_json(a) order by a.n desc), '[]'::json) from (select n, status, contact_name, template, channel, text, created_at, decided_at, detail from approvals where location_id = ${sqlLit(loc)} order by n desc limit 40) a),
+  'consents', (select coalesce(json_agg(row_to_json(c) order by c.created_at desc), '[]'::json) from (select status, source, created_at, contact_id from consents where location_id = ${sqlLit(loc)} order by created_at desc limit 40) c),
+  'events', (select coalesce(json_agg(row_to_json(e) order by e.created_at desc), '[]'::json) from (select event, detail, created_at from tenant_events where location_id = ${sqlLit(loc)} order by created_at desc limit 40) e),
+  'files', (select coalesce(json_agg(json_build_object('path', path, 'updated_at', updated_at)), '[]'::json) from tenant_files where location_id = ${sqlLit(loc)})
+) as tenant`;
+const RUN_SQL = (id) => `select json_build_object('id', r.id, 'job_id', r.job_id, 'attempt', r.attempt, 'started_at', r.started_at, 'finished_at', r.finished_at, 'status', r.status, 'model', r.model, 'input_tokens', r.input_tokens, 'output_tokens', r.output_tokens, 'steps', r.steps, 'summary', r.summary, 'error', r.error,
+  'jobs', json_build_object('kind', j.kind, 'location_id', j.location_id, 'payload', j.payload, 'status', j.status, 'attempts', j.attempts, 'last_error', j.last_error)) as run
+  from job_runs r join jobs j on j.id = r.job_id where r.id = ${Number(id)}`;
+async function api(path, opts) {
+  if (path === "/overview") return (await sql(OVERVIEW_SQL, opts))[0].overview;
+  let m = path.match(/^\/tenant\/(.+)$/); if (m) { if (!idOk(m[1])) throw new Error("bad id"); return (await sql(TENANT_SQL(m[1])))[0].tenant; }
+  m = path.match(/^\/run\/(\d+)$/); if (m) { const r = await sql(RUN_SQL(m[1])); if (!r.length) throw new Error("no such run"); return r[0].run; }
+  throw new Error("unknown " + path);
+}
+
+function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2200); }
+
+function modePill(m) { const c = { test: "info", shadow: "warn", storm: "ok", standard: "ok" }[m] || ""; return `<span class="pill ${c}">${esc(m || "?")}</span>`; }
+function a2pPill(a) { const s = a?.campaign_status || "not_started"; const c = s === "approved" ? "ok" : s === "pending" ? "warn" : s === "rejected" ? "crit" : ""; return `<span class="pill ${c}">${esc(s.replace("_", " "))}</span>`; }
+
+function renderStrip(d) {
+  const q = d.queue || {};
+  const hb = q.last_run_started ? (Date.now() - new Date(q.last_run_started)) / 60000 : null;
+  const hbClass = hb === null ? "quiet" : (q.runnable > 0 && hb > 10) ? "crit" : "ok";
+  const crit = d.alerts.filter((a) => a.severity === "crit").length;
+  const tiles = [
+    { label: "Worker", value: hb === null ? "never" : ago(q.last_run_started), sub: `${q.runs_1h ?? 0} runs in the last hour`, cls: hbClass },
+    { label: "Queue", value: `${q.runnable ?? 0}`, sub: `${q.scheduled ?? 0} scheduled · ${q.running ?? 0} running${q.oldest_runnable_seconds ? " · oldest " + Math.round(q.oldest_runnable_seconds / 60) + " min" : ""}`, cls: q.runnable > 3 ? "warn" : "ok" },
+    { label: "Dead jobs 24h", value: `${q.dead_24h ?? 0}`, sub: `${q.dead ?? 0} total`, cls: q.dead_24h > 0 ? "crit" : "ok" },
+    { label: "Failed runs 1h", value: `${q.failed_1h ?? 0}`, sub: `${q.runs_1h ?? 0} runs`, cls: q.failed_1h >= 3 ? "warn" : "ok" },
+    { label: "Open alerts", value: `${d.alerts.length}`, sub: crit ? `${crit} critical` : "none critical", cls: crit ? "crit" : d.alerts.length ? "warn" : "ok" },
+    { label: "Agency token", value: d.agency ? (new Date(d.agency.expires_at) > new Date() ? "valid" : "expired") : "none", sub: d.agency ? (d.agency.last_error ? "refresh error" : "expires " + ago(d.agency.expires_at).replace(" ago", " ahead")) : "install the app on PIVOT", cls: !d.agency || d.agency.last_error ? "crit" : "ok" },
+  ];
+  $("#strip").innerHTML = tiles.map((t) => `<div class="tile ${t.cls}"><div class="label">${t.label}</div><div class="value num">${esc(t.value)}</div><div class="sub">${esc(t.sub)}</div></div>`).join("");
+}
+
+function renderAlerts(d) {
+  if (!d.alerts.length) { $("#alerts").innerHTML = `<div class="empty">Nothing open. The monitor checks every 5 minutes.</div>`; return; }
+  $("#alerts").innerHTML = d.alerts.map((a) => `<div class="alert ${a.severity}"><span class="pill ${a.severity}">${a.severity}</span><div><div class="title">${esc(a.title)}</div><div class="sub">since ${when(a.first_seen)} · seen ${a.count}× · ${a.last_notified_at ? "notified " + ago(a.last_notified_at) : "not notified"} · <span class="mono">${esc(a.key)}</span></div></div></div>`).join("");
+}
+
+function renderTenants(d) {
+  const rows = d.tenants.map((t) => {
+    const tokOk = t.token.expires_at && new Date(t.token.expires_at) > new Date() && !t.token.last_error;
+    const num = t.compliance.sms_number || (t.compliance.numbers[0]?.number) || "";
+    return `<tr class="click" data-loc="${esc(t.location_id)}">
+      <td><b>${esc(t.company)}</b><div class="sub mono">${esc(t.location_id)}${t.trade ? " · " + esc(t.trade) : ""}</div></td>
+      <td>${modePill(t.mode)} ${t.bots_enabled === "true" ? "" : `<span class="pill crit">bots off</span>`}${t.cv_error ? `<div class="sub">${esc(t.cv_error)}</div>` : ""}</td>
+      <td>${a2pPill(t.compliance.a2p)}${t.compliance.sms_paused ? ` <span class="pill crit">SMS paused</span>` : ""}<div class="sub">${num ? esc(num) : "no number"}</div></td>
+      <td class="r num">${t.pending_approvals}</td>
+      <td class="r num">${t.today.runs}${t.today.failed ? ` <span class="pill crit">${t.today.failed} failed</span>` : ""}</td>
+      <td class="r num">${t.today.sent}${t.today.shadow ? ` <span class="sub">+${t.today.shadow} shadow</span>` : ""}${t.today.blocked ? ` <span class="pill warn">${t.today.blocked} blocked</span>` : ""}${t.today.undelivered ? ` <span class="pill crit">${t.today.undelivered} undelivered</span>` : ""}</td>
+      <td class="r num">${fmt$(t.today.cost)}<div class="sub">${fmt$(t.week.cost)} / 7d</div></td>
+      <td><span class="pill ${tokOk ? "ok" : "crit"}">${tokOk ? "ok" : t.token.last_error ? "error" : "expired"}</span><div class="sub">${t.status}</div></td>
+    </tr>`;
+  }).join("");
+  $("#tenants").innerHTML = `<thead><tr><th>Sub-account</th><th>Mode</th><th>A2P / number</th><th class="r">Pending</th><th class="r">Runs today</th><th class="r">Sent today</th><th class="r">Cost</th><th>Token</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="empty">No client sub-accounts installed yet.</td></tr>`}</tbody>`;
+  $("#tenants").querySelectorAll("tr.click").forEach((tr) => tr.addEventListener("click", () => openTenant(tr.dataset.loc)));
+}
+
+const COLORS = ["#0f6e68", "#9a5b00", "#2b5fa8", "#7a3e9d", "#b3261e", "#4a6b2a"];
+function renderChart(d) {
+  const days = []; for (let i = 6; i >= 0; i--) days.push(new Date(Date.now() - i * 864e5).toISOString().slice(0, 10));
+  const locs = d.tenants.map((t) => t.location_id);
+  const name = (l) => d.tenants.find((t) => t.location_id === l)?.company || l;
+  const byDay = days.map((day) => locs.map((l) => Number((d.usage.find((u) => u.day === day && u.location_id === l) || {}).model_cost_usd || 0)));
+  const max = Math.max(1, ...byDay.map((r) => r.reduce((a, b) => a + b, 0)));
+  const W = 720, H = 200, padL = 44, padB = 26, padT = 10, innerW = W - padL - 10, innerH = H - padT - padB, bw = innerW / 7;
+  let s = `<style>.ax{fill:var(--muted);font:11px var(--mono)}.gl{stroke:var(--line);stroke-width:1}</style>`;
+  const ticks = [0, max / 2, max];
+  for (const tv of ticks) { const y = padT + innerH - (tv / max) * innerH; s += `<line class="gl" x1="${padL}" x2="${W - 10}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/><text class="ax" x="${padL - 6}" y="${(y + 4).toFixed(1)}" text-anchor="end">$${tv.toFixed(tv >= 10 ? 0 : 1)}</text>`; }
+  byDay.forEach((row, i) => {
+    let y = padT + innerH; const x = padL + i * bw + bw * 0.2;
+    row.forEach((v, j) => { const h = (v / max) * innerH; y -= h; if (h > 0) s += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw * 0.6).toFixed(1)}" height="${h.toFixed(1)}" fill="${COLORS[j % COLORS.length]}" rx="2"><title>${esc(name(locs[j]))} ${days[i]}: ${fmt$(v)}</title></rect>`; });
+    const tot = row.reduce((a, b) => a + b, 0);
+    if (tot > 0) s += `<text class="ax" x="${(x + bw * 0.3).toFixed(1)}" y="${(y - 4).toFixed(1)}" text-anchor="middle">${fmt$(tot)}</text>`;
+    s += `<text class="ax" x="${(x + bw * 0.3).toFixed(1)}" y="${H - 8}" text-anchor="middle">${days[i].slice(5)}</text>`;
+  });
+  $("#chart").innerHTML = s;
+  $("#legend").innerHTML = locs.map((l, j) => `<span><i style="background:${COLORS[j % COLORS.length]}"></i>${esc(name(l))}</span>`).join("");
+}
+
+function renderFailures(d) {
+  const rows = d.failures.map((f) => `<tr class="click" data-run="${f.id}"><td>${when(f.started_at)}</td><td>${esc(f.kind)}</td><td>${esc(d.tenants.find((t) => t.location_id === f.location_id)?.company || f.location_id)}</td><td><span class="pill ${f.status === "failed" ? "crit" : "warn"}">${f.status}</span></td><td style="white-space:normal;max-width:420px">${esc((f.error || f.summary || "").slice(0, 160))}</td></tr>`).join("");
+  $("#failures").innerHTML = `<thead><tr><th>When</th><th>Kind</th><th>Sub-account</th><th>Status</th><th>Error / summary</th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">No failed or blocked runs.</td></tr>`}</tbody>`;
+  $("#failures").querySelectorAll("tr.click").forEach((tr) => tr.addEventListener("click", () => openRun(tr.dataset.run)));
+}
+
+function renderRouting(d) {
+  const a = (d.settings.find((s) => s.key === "alerts") || {}).value || {};
+  const loc = d.tenants.find((t) => t.location_id === a.location_id);
+  $("#routing").innerHTML = `<div>Goes to</div><div>contact <span class="mono">${esc(a.contact_id || "?")}</span> in ${esc(loc?.company || a.location_id || "?")}</div><div>Channels</div><div>${esc((a.channels || []).join(", ") || "—")}</div><div>Minimum severity</div><div>${esc(a.min_severity || "warn")}</div><div>Repeat while open</div><div>every ${Math.round((a.renotify_minutes || 360) / 60)} h</div>`;
+}
+
+const FIX = {
+  server_not_connected: "Add the Supabase connector in claude.ai → Settings → Connectors, then reload.",
+  needs_reauth: "Reconnect Supabase in claude.ai → Settings → Connectors, then reload.",
+  not_in_manifest: "This page was not allowed to use Supabase. Open the artifact's Permissions menu and allow the Supabase connector.",
+  approval_required: "Allow the Supabase call when claude.ai asks, then try again.",
+  consent_required: "Allow this page to use Supabase when claude.ai asks, then try again.",
+  blocked_by_policy: "Your organization blocks this connector for pages.",
+  not_granted: "Open this page inside claude.ai while signed in; it reads the database through your Supabase connector.",
+  capability_disabled: "This viewer cannot run connectors; open the page in claude.ai.",
+  tool_error: "The database query failed; the SQL views may be missing. Details below.",
+};
+function showGate(e) {
+  $("#app").hidden = true; $("#gate").hidden = false;
+  const code = e?.code || "";
+  $("#gatemsg").textContent = FIX[code] || "Could not reach the database. " + (e?.retryable ? "This usually clears in a moment." : "");
+  $("#gateerr").hidden = false; $("#gateerr").textContent = (code ? code + ": " : "") + (e?.message || String(e));
+  $("#retry").hidden = false;
+}
+async function load(fresh) {
+  try {
+    data = await api("/overview", { fresh });
+    $("#gate").hidden = true; $("#app").hidden = false;
+    renderStrip(data); renderAlerts(data); renderTenants(data); renderChart(data); renderFailures(data); renderRouting(data);
+    $("#updated").textContent = "updated " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  } catch (e) {
+    if (data) { $("#updated").textContent = "refresh failed (" + (e?.code || "error") + ") — showing last data"; }
+    else showGate(e);
+  }
+}
+
+function drawer(html) {
+  const host = $("#drawerhost");
+  host.innerHTML = `<div class="scrim" id="scrim"></div><aside class="drawer" role="dialog" aria-modal="true">${html}</aside>`;
+  const close = () => { host.innerHTML = ""; document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  $("#scrim").addEventListener("click", close); document.addEventListener("keydown", onKey);
+  host.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
+  return host.querySelector(".drawer");
+}
+
+async function openTenant(loc) {
+  const t = data.tenants.find((x) => x.location_id === loc) || {};
+  const el = drawer(`<header><h1>${esc(t.company || loc)}</h1>${modePill(t.mode)}<span class="spacer"></span><button data-close>Close</button></header><div class="sub">Loading…</div>`);
+  try {
+    const d = await api("/tenant/" + loc);
+    const tabs = ["runs", "sends", "approvals", "consents", "events", "settings"];
+    const views = {
+      runs: `<div class="tablewrap"><table><thead><tr><th>When</th><th>Kind</th><th>Status</th><th class="r">Tokens</th><th>Summary</th></tr></thead><tbody>${d.runs.map((r) => `<tr class="click" data-run="${r.id}"><td>${when(r.started_at)}</td><td>${esc(r.kind)}</td><td><span class="pill ${r.status === "succeeded" ? "ok" : r.status === "failed" ? "crit" : r.status === "blocked" ? "warn" : "info"}">${esc(r.status)}</span></td><td class="r num">${(r.input_tokens || 0) + (r.output_tokens || 0)}</td><td style="white-space:normal;min-width:260px">${esc((r.error || r.summary || "").slice(0, 200))}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No runs yet.</td></tr>`}</tbody></table></div>`,
+      sends: `<div class="tablewrap"><table><thead><tr><th>When</th><th>Channel</th><th>Template</th><th>Verdict</th><th>Delivery</th><th>Detail</th></tr></thead><tbody>${d.sends.map((s) => `<tr><td>${when(s.created_at)}</td><td>${esc(s.channel)}</td><td class="mono">${esc(s.template || "")}</td><td><span class="pill ${s.verdict === "sent" ? "ok" : s.verdict.startsWith("blocked") ? "warn" : s.verdict === "error" ? "crit" : "info"}">${esc(s.verdict)}</span></td><td>${esc(s.delivery_status || "")}${s.delivery_error ? `<div class="sub">${esc(s.delivery_error.slice(0, 80))}</div>` : ""}</td><td style="white-space:normal;max-width:300px">${esc((s.detail || "").slice(0, 140))}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">No sends logged.</td></tr>`}</tbody></table></div>`,
+      approvals: `<div class="tablewrap"><table><thead><tr><th>#</th><th>Status</th><th>Who</th><th>Template</th><th>Text</th><th>When</th></tr></thead><tbody>${d.approvals.map((a) => `<tr><td class="num">${a.n}</td><td><span class="pill ${a.status === "pending" ? "warn" : a.status === "sent" ? "ok" : ""}">${esc(a.status)}</span></td><td>${esc(a.contact_name || "")}</td><td class="mono">${esc(a.template)}</td><td style="white-space:normal;min-width:260px">${esc(a.text.slice(0, 180))}</td><td>${when(a.created_at)}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">No approvals.</td></tr>`}</tbody></table></div>`,
+      consents: `<div class="tablewrap"><table><thead><tr><th>When</th><th>Status</th><th>Source</th><th>Contact</th></tr></thead><tbody>${d.consents.map((c) => `<tr><td>${when(c.created_at)}</td><td><span class="pill ${c.status === "opted_in" ? "ok" : "crit"}">${esc(c.status)}</span></td><td>${esc(c.source)}</td><td class="mono">${esc(c.contact_id)}</td></tr>`).join("") || `<tr><td colspan="4" class="empty">No consent records.</td></tr>`}</tbody></table></div>`,
+      events: `<div class="tablewrap"><table><thead><tr><th>When</th><th>Event</th><th>Detail</th></tr></thead><tbody>${d.events.map((e) => `<tr><td>${when(e.created_at)}</td><td class="mono">${esc(e.event)}</td><td style="white-space:normal;max-width:420px" class="mono">${esc(JSON.stringify(e.detail || {}).slice(0, 220))}</td></tr>`).join("") || `<tr><td colspan="3" class="empty">No events.</td></tr>`}</tbody></table></div>`,
+      settings: `<div class="kv">${Object.entries(d.custom_values || {}).map(([k, v]) => `<div>${esc(k)}</div><div class="mono" style="word-break:break-all">${esc(v)}</div>`).join("")}</div><h2 style="margin-top:14px">Tenant settings</h2><pre class="mono" style="white-space:pre-wrap;word-break:break-word">${esc(JSON.stringify(d.tenant?.settings || {}, null, 2))}</pre><div class="sub">Files: ${d.files.map((f) => esc(f.path)).join(", ") || "none"}</div>`,
+    };
+    el.innerHTML = `<header><h1>${esc(t.company || loc)}</h1>${modePill(t.mode)}<span class="spacer"></span><button data-close>Close</button></header>
+      <div class="tabs" role="tablist">${tabs.map((x, i) => `<button role="tab" aria-selected="${i === 0}" data-tab="${x}">${x}</button>`).join("")}</div><div id="tabview">${views.runs}</div>`;
+    el.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => { el.querySelectorAll("[data-tab]").forEach((x) => x.setAttribute("aria-selected", x === b)); el.querySelector("#tabview").innerHTML = views[b.dataset.tab]; bindRuns(el); }));
+    el.querySelector("[data-close]").addEventListener("click", () => { $("#drawerhost").innerHTML = ""; });
+    bindRuns(el);
+  } catch (e) { el.querySelector(".sub").textContent = "Could not load: " + e.message; }
+}
+function bindRuns(el) { el.querySelectorAll("tr[data-run]").forEach((tr) => tr.addEventListener("click", () => openRun(tr.dataset.run))); }
+
+async function openRun(id) {
+  const el = drawer(`<header><h1>Run ${esc(id)}</h1><span class="spacer"></span><button data-close>Close</button></header><div class="sub">Loading…</div>`);
+  try {
+    const r = await api("/run/" + id);
+    const j = r.jobs || {};
+    el.innerHTML = `<header><h1>${esc(j.kind)} · run ${esc(id)}</h1><span class="pill ${r.status === "succeeded" ? "ok" : r.status === "failed" ? "crit" : "warn"}">${esc(r.status)}</span><span class="spacer"></span><button data-close>Close</button></header>
+      <div class="kv"><div>Sub-account</div><div class="mono">${esc(j.location_id)}</div><div>Started</div><div>${when(r.started_at)} · ${r.finished_at ? Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000) + " s" : "running"}</div><div>Attempt</div><div>${r.attempt} of job attempts ${j.attempts}</div><div>Tokens</div><div class="num">${r.input_tokens || 0} in · ${r.output_tokens || 0} out · ${esc(r.model || "")}</div>${r.error ? `<div>Error</div><div class="err">${esc(r.error)}</div>` : ""}${r.summary ? `<div>Summary</div><div style="white-space:pre-wrap">${esc(r.summary)}</div>` : ""}</div>
+      <h2>Payload</h2><pre class="mono" style="white-space:pre-wrap;word-break:break-word;max-height:160px;overflow:auto">${esc(JSON.stringify(j.payload || {}, null, 1))}</pre>
+      <h2>Steps (${(r.steps || []).length})</h2><div class="steps">${(r.steps || []).map((s, i) => `<div class="step ${s.ok === false ? "bad" : "good"}"><b>${i + 1}. ${esc(s.tool)}</b> ${s.ms ? `<span class="sub">${s.ms} ms</span>` : ""}${s.args ? `<pre>${esc(JSON.stringify(s.args).slice(0, 600))}</pre>` : ""}${s.result_excerpt ? `<pre>${esc(String(s.result_excerpt).slice(0, 600))}</pre>` : ""}</div>`).join("") || `<div class="empty">No steps recorded.</div>`}</div>`;
+    el.querySelector("[data-close]").addEventListener("click", () => { $("#drawerhost").innerHTML = ""; });
+  } catch (e) { el.querySelector(".sub").textContent = "Could not load: " + e.message; }
+}
+
+function schedule() { clearInterval(timer); if ($("#auto").checked) timer = setInterval(() => load(true), 60_000); }
+$("#refresh").addEventListener("click", () => { load(true); toast("Refreshing"); });
+$("#retry").addEventListener("click", () => load(true));
+$("#auto").addEventListener("change", schedule);
+(async () => {
+  mcp = window.claude?.use ? await window.claude.use("mcp") : null;
+  if (!mcp) { showGate({ code: "not_granted", message: "window.claude.use('mcp') resolved null" }); return; }
+  load(false); schedule();
+})();
+})();
+</script>
