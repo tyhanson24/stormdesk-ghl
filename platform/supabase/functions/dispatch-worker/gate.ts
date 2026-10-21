@@ -20,6 +20,7 @@ export type Verdict = { ok: true; args: SendArgs; redirected?: boolean } | { ok:
 
 const ESCALATION = /\b(lawyer|attorney|sue|suing|injured|injury|mold|fire|fraud|osha)\b/i;
 const PRICE = /(\$\s?\d)|(\b(ballpark|around|roughly|approximately)\b[^.\n]{0,20}\d)/i;
+const PLACEHOLDER = /\{\{?\s*[A-Za-z_][\w. |-]*\s*\}?\}|\bundefined\b|\bnull\b|\[object /i;
 const DATE = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|tonight)\b|\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.? \d{1,2}\b/i;
 
 export async function sha(s: string) {
@@ -82,7 +83,10 @@ export async function gate(ctx: GateCtx, raw: SendArgs): Promise<Verdict> {
   const approved = isOwner || redirected || ctx.jobKind === "approval_reply" || (args.template && autoFlags.includes(String(args.template)));
   if (!approved) return { ok: false, check: "no_approval", reason: "homeowner send without owner approval or auto_* flag" };
 
-  // 6 content rules (5 template integrity is enforced by the template check in the skill; drift is caught by the owner at approval)
+  // 5 unfilled placeholders: a template that still carries {first}, {{street}}, undefined, null… never leaves, approved or not.
+  if (!isOwner && PLACEHOLDER.test(text)) return { ok: false, check: "placeholder", reason: `unfilled placeholder: ${text.match(PLACEHOLDER)?.[0]}` };
+
+  // 6 content rules (template drift is caught by the owner at approval)
   if (!isOwner && !redirected) {
     if (PRICE.test(text)) return { ok: false, check: "price", reason: "price-like content" };
     if (DATE.test(text) && !args.booked_event_id) return { ok: false, check: "date", reason: "date/weekday without booked_event_id" };
