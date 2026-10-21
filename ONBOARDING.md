@@ -27,7 +27,7 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 
 ## The flow
 1. **Call (15 min).** Fill the intake form with the client on the phone, or send them the link. Submission creates a contact in PIVOT tagged `dispatch-onboarding` (WF-00 in PIVOT — to build).
-2. **Setup (2–3 min, Office, one tool call).** Say "set up <Company>" to Office. The `setup-customer` skill calls `dispatch_setup-customer` (gateway → `dispatch-setup` edge function), which: creates the sub-account from snapshot `iIvtMHToswxykXgyB0G8` with an agency token (or reuses `location_id`), waits for the snapshot, creates the tenant row + per-client ingest key, upserts the owner contact (tag `owner`), overwrites **all 17 custom values** (`wh_*` → `dispatch-ingest/<kind>` incl. `wh_optout`, `bot_webhook_key*` → ingest key, `wf02_id`, `mode=test`, `bots_enabled=true`, trade, company, owner phone, address, license, review link, storm event), writes company-profile / service-area / pricing-guardrails / do-not-contact into `tenant_files`, and returns the remaining-steps list. Idempotent: re-run with `location_id`.
+2. **Setup (2–3 min, Office, one tool call).** Say "set up <Company>" to Office. The `setup-customer` skill calls `dispatch_setup-customer` (gateway → `dispatch-setup` edge function), which: creates the sub-account from snapshot `iIvtMHToswxykXgyB0G8` with an agency token (or reuses `location_id`), waits for the snapshot, creates the tenant row + per-client ingest key, upserts the owner contact (tag `owner`), overwrites **all 18 custom values** (`wh_*` → `dispatch-ingest/<kind>` incl. `wh_optout` and `wh_reply`, `bot_webhook_key*` → ingest key, `wf02_id`, `mode=test`, `bots_enabled=true`, trade, company, owner phone, address, license, review link, storm event), writes company-profile / service-area / pricing-guardrails / do-not-contact (always) and price-book / estimate-template (first run only — owner-edited after that) into `tenant_files`, and returns the remaining-steps list. Idempotent: re-run with `location_id`.
    - Needs HighLevel to allow API sub-account creation (Agency Pro). If it refuses, create the sub-account from the snapshot in the UI and re-run with `location_id`.
    - The marketplace app auto-installs on the new sub-account; the gateway mints its token from the agency install.
 3. **Owner user (1 min, Ty).** Add the owner as a user on the sub-account (our app has `users.readonly` only). Re-run setup with `location_id` so `owner_user_id` is stored (tasks are assigned to it).
@@ -36,7 +36,7 @@ Goal: 5 minutes of Ty per client. Everything else is the snapshot, the intake fo
 6. **Welcome (automatic).** Golden PASS queues `dispatch_welcome`; the owner gets W-1 text + W-2 email the moment Ty flips `mode` to `shadow` (held while `test`), and the W-3 recap 3 days later. Copy: `config/welcome-copy.md` (approved).
 7. **Go-live.** A2P approved → `mode=shadow` 48 h → Ty flips `mode=storm` or `standard`.
 
-Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 / WF-12 post to `dispatch-ingest` and the cloud worker runs them (`platform/WORKER.md`).
+Client routines no longer live in Grok Bot: WF-02 / WF-05 / WF-08 / WF-11 / WF-12 / WF-13 (replies) post to `dispatch-ingest` and the cloud worker runs them (`platform/WORKER.md`).
 
 ## Guards
 - `health-check` fails hard if any custom value still equals the template's value (webhook keys, wf02_id) or contains REPLACE.
