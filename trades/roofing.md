@@ -21,3 +21,11 @@ price_book_categories: tarp, repair, partial replacement, full replacement (shin
 escalation_words_extra: ceiling collapse, electrical, sparking
 golden.emergency_phrase: water coming through the ceiling in the kitchen, shingles gone over the garage
 golden.minor_phrase: a few shingles in the yard after the storm, no leaks that I can see
+
+# Everyday (standard mode)
+services: roof repair, leak repair, full replacement (shingle/metal/tile), re-roof after inspection, skylight repair, gutter add-on, roof inspection / real-estate inspection
+standard_next_step: we'll text you an estimate window (free roof inspection first)
+lead_time: estimates usually within 3 business days; installs 2–4 weeks after approval
+phone_quote_ok: false
+maintenance: annual roof + flashing inspection; gutter clean-out each fall
+seasonal_peak: June–November (storm season); spring real-estate inspections

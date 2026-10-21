@@ -21,3 +21,11 @@ price_book_categories: reattach, section replacement, full replacement (5"/6" se
 escalation_words_extra: foundation crack, flooding inside
 golden.emergency_phrase: a whole gutter section is hanging over the front door
 golden.minor_phrase: gutters are sagging on the back side, not leaking inside
+
+# Everyday (standard mode)
+services: gutter clean-out, seamless gutter install, downspout repair/add, gutter guards, fascia/soffit repair, drainage extensions
+standard_next_step: we'll text you a service window
+lead_time: clean-outs within a week; installs 1–2 weeks after approval
+phone_quote_ok: true for clean-outs and guards by linear foot; false for fascia/soffit
+maintenance: clean-out twice a year (spring, fall) or quarterly with heavy trees
+seasonal_peak: fall; after any storm

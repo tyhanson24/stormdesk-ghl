@@ -21,3 +21,11 @@ price_book_categories: emergency removal, standard removal by size, limb removal
 escalation_words_extra: power line, sparking, gas smell, trapped
 golden.emergency_phrase: a big oak limb is on the roof over the bedroom and the power line is touching it
 golden.minor_phrase: lots of limbs and debris in the yard, nothing on the house
+
+# Everyday (standard mode)
+services: tree removal, trimming/pruning, stump grinding, storm cleanup, hazardous limb removal, lot clearing, crane work
+standard_next_step: we'll text you an estimate window (an arborist looks at every removal)
+lead_time: estimates within 2–3 business days; work 1–2 weeks after approval
+phone_quote_ok: true for stump grinding by diameter; false for removals
+maintenance: trim every 2–3 years; hazard inspection before each storm season
+seasonal_peak: late spring and pre-storm-season (May–June)

@@ -21,3 +21,11 @@ price_book_categories: panel replacement, post reset, full run replacement (wood
 escalation_words_extra: pool, child, dog got out, trespass
 golden.emergency_phrase: fence blew down into the street and the pool is wide open
 golden.minor_phrase: one panel is loose by the gate, nothing urgent
+
+# Everyday (standard mode)
+services: panel/section repair, post reset, gate repair or new gate, full fence install (wood/vinyl/aluminum/chain-link), pool fence, privacy fence, haul-away
+standard_next_step: we'll text you an estimate window
+lead_time: estimates within 3 business days; installs 2–3 weeks after approval (HOA approval first if needed)
+phone_quote_ok: true for single-panel or single-gate repairs with a photo; false for full runs
+maintenance: re-stain/seal wood every 2–3 years; gate hardware check yearly
+seasonal_peak: spring and fall

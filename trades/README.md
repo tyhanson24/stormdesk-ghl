@@ -18,4 +18,17 @@ Every pack defines the same keys so skills never branch on trade name:
 | `escalation_words_extra` | send-gate |
 | `golden.emergency_phrase`, `golden.minor_phrase` | golden-test |
 
-Adding a trade = copy `roofing.md`, change the values, add the form to the snapshot.
+Every pack also has an **Everyday (standard mode)** block used when `mode` is `standard`:
+
+| key | used by |
+|---|---|
+| `services` | intake (request type quote/repair/maintenance), estimate-drafting |
+| `standard_next_step` | ACK-1 standard version |
+| `lead_time` | ACK-1 standard version, status-updates |
+| `phone_quote_ok` | intake (whether a quote request can skip the site visit) |
+| `maintenance` | intake (maintenance requests), future reminders (owner-approved copy only) |
+| `seasonal_peak` | daily brief context |
+
+Packs (20): roofing, fencing, gutters, restoration, screen-enclosures, tree-service, turf, plumbing, hvac, electrical, pool, pressure-washing, painting, garage-doors, windows-doors, landscaping, pest-control, docks-seawalls, drywall, solar.
+
+Adding a trade = copy `roofing.md`, change the values (both blocks), add the form to the snapshot.

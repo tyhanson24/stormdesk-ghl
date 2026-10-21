@@ -21,3 +21,11 @@ price_book_categories: emergency extraction, drying (per day/equipment), demo, m
 escalation_words_extra: sewage, asbestos, lead paint, hospital, asthma
 golden.emergency_phrase: two inches of water in the living room and the ceiling is sagging
 golden.minor_phrase: small water stain on the ceiling, it's dry now
+
+# Everyday (standard mode)
+services: water damage dry-out, mold remediation, fire/smoke cleanup, contents pack-out, reconstruction after loss, insurance claim support
+standard_next_step: a project manager will call to schedule an inspection
+lead_time: inspection within 24 hours for active water; reconstruction scheduled after adjuster approval
+phone_quote_ok: false
+maintenance: none (inspection after any leak or appliance failure)
+seasonal_peak: storm season; winter pipe breaks
