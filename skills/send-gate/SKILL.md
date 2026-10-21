@@ -22,7 +22,8 @@ Nothing goes out without passing all checks. If any check fails: do not send, wr
    - `storm` / `standard` → continue.
 3. **Recipient allowed.** Contact must not be tagged `do-not-contact`, must not match `/workspace/do-not-contact.csv` (phone or email), and GHL DND must be off for that channel. Fail → BLOCKED `dnc`.
 4. **Approval.** The message must carry an approval token: an owner `APPROVE` reply via WF-11 naming this draft, the owner completing its GHL task, or an `auto_*` flag in company-profile that explicitly covers this exact template. Fail → BLOCKED `no_approval`.
-5. **Template integrity.** If a template id is set, the text must match that template with only placeholders substituted. Any added sentence → BLOCKED `template_drift`.
+5. **Placeholders.** Text still containing `{anything}`, `{{anything}}`, `undefined`, `null` or `[object` → BLOCKED `placeholder` (enforced in code; applies to approved drafts too).
+5a. **Template integrity.** If a template id is set, the text must match that template with only placeholders substituted. Any added sentence → BLOCKED `template_drift`.
 6. **Content rules.**
    - No `$` followed by a digit, no "ballpark", "around", "roughly" next to a number → BLOCKED `price`.
    - No calendar date or weekday unless the message carries a `booked_event_id` or a confirmed opportunity field it came from → BLOCKED `date`. The `storm_event` value (e.g. "Isaias 2026-10") is a label, not a date; never flag it.
