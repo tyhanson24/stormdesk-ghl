@@ -10,6 +10,7 @@ export type GateCtx = {
   customValues: Record<string, string>;     // bots_enabled, mode, company_name, owner_phone …
   settings: Record<string, any>;            // tenants.settings: owner_contact_id, timezone, auto_ack
   inboundText?: string;                     // the inbound message for this job, if any (escalation words)
+  inboundAt?: number;                       // ms epoch of the inbound this job answers (inbound_reply): < 15 min ago relaxes quiet hours + weekly cap
   getContact: (id: string) => Promise<any>; // gateway contacts_get-contact
   dncList: string[];                        // phones/emails from do-not-contact.csv
 };
@@ -107,21 +108,23 @@ export async function gate(ctx: GateCtx, raw: SendArgs): Promise<Verdict> {
     }
   }
 
-  // 7 quiet hours (owner / crew exempt)
+  // 7 quiet hours (owner / crew exempt; so is a reply to a text that arrived in the last 15 minutes)
   const crew = tags.includes("crew") || tags.includes("owner");
-  if (!isOwner && !crew) {
+  const answeringNow = !!ctx.inboundAt && Date.now() - ctx.inboundAt < 15 * 60_000;
+  if (!isOwner && !crew && !answeringNow) {
     const hm = localHourMinute(ctx.settings.timezone ?? "America/Chicago");
     if (hm >= 20 * 60 || hm < 7 * 60 + 30) return { ok: false, check: "quiet_hours", reason: "8:00 PM–7:30 AM local" };
   }
 
-  // 8 weekly cap, 9 rate limit, 11 duplicate — from outbound_log
+  // 8 weekly cap (storm 2 / standard 6 per contact per 7 days; replies within 15 min exempt), 9 rate limit, 11 duplicate — from outbound_log
   const since7d = new Date(Date.now() - 7 * 864e5).toISOString();
   const since1h = new Date(Date.now() - 3600e3).toISOString();
   const since10m = new Date(Date.now() - 600e3).toISOString();
-  if (!isOwner && !redirected) {
+  if (!isOwner && !redirected && !answeringNow) {
+    const cap = mode === "storm" ? 2 : 6;
     const { count: weekly } = await ctx.db.from("outbound_log").select("id", { count: "exact", head: true })
       .eq("location_id", ctx.locationId).eq("contact_id", args.contactId).eq("verdict", "sent").gte("created_at", since7d);
-    if ((weekly ?? 0) >= 2) return { ok: false, check: "weekly_cap", reason: `${weekly} sends in 7 days` };
+    if ((weekly ?? 0) >= cap) return { ok: false, check: "weekly_cap", reason: `${weekly} sends in 7 days (cap ${cap} in ${mode} mode)` };
   }
   const { count: hourly } = await ctx.db.from("outbound_log").select("id", { count: "exact", head: true })
     .eq("location_id", ctx.locationId).eq("verdict", "sent").gte("created_at", since1h);

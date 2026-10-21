@@ -29,7 +29,7 @@ function setupProblems(loc: string, cv: Record<string, string>): string[] {
   const base = env("PUBLIC_BASE_URL");
   const out: string[] = [];
   for (const [k, v] of Object.entries(cv)) if (k !== "review_link" && /REPLACE/i.test(v)) out.push(`${k} still says REPLACE`);   // review_link is set at go-live, not intake-critical
-  for (const k of ["wh_intake", "wh_approval", "wh_optout"]) if (cv[k] && !cv[k].startsWith(`${base}/functions/v1/dispatch-ingest/`)) out.push(`${k} does not point at dispatch-ingest`);
+  for (const k of ["wh_intake", "wh_approval", "wh_optout", "wh_reply"]) if (cv[k] && !cv[k].startsWith(`${base}/functions/v1/dispatch-ingest/`)) out.push(`${k} does not point at dispatch-ingest`);
   for (const k of ["bot_webhook_key", "bot_webhook_key_intake"]) if (cv[k] && !/^ik_[a-f0-9]{48}$/.test(cv[k])) out.push(`${k} is not a Dispatch ingest key`);
   if (loc !== TEMPLATE_LOCATION && cv.wf02_id === "59c92c05-5fc0-4891-832c-bf3d991c4c6a") out.push("wf02_id is the template's");
   if (loc !== TEMPLATE_LOCATION && /template/i.test(cv.company_name ?? "")) out.push("company_name is the template's");
@@ -45,6 +45,8 @@ const ALL_FILES = ["company-profile.md", "service-area.md", "pricing-guardrails.
 const KIND_SPEC: Record<string, { skills: string[]; tools: string[] | "ALL"; files: string[]; task: (p: any) => string }> = {
   intake: { skills: ["storm-intake"], tools: [...CORE_TOOLS, ...OPP_TOOLS, "contacts_upsert-contact", "contacts_create-contact"], files: ["company-profile.md", "service-area.md", "pricing-guardrails.md", "do-not-contact.csv"], task: (p) => `New lead webhook received. Run storm-intake on contact ${p.contact_id} using this payload: ${JSON.stringify(p)}. Draft the reply as a contact note (exact DRAFT format) + an approval task for the owner. Do NOT call conversations_send-a-new-message unless the template you drafted is explicitly listed in the auto-send flags given in the system prompt; the DRAFT note + approval task IS the deliverable otherwise.` },
   approval_reply: { skills: [], tools: CORE_TOOLS, files: [], task: (p) => `Owner replied to an approval. Reply text: ${JSON.stringify(p.message ?? p.body ?? "")}. Owner contact: ${p.contact_id}.` },
+  inbound_reply: { skills: ["reply-handling", "storm-intake"], tools: [...CORE_TOOLS, ...OPP_TOOLS, ...CAL_TOOLS], files: ["company-profile.md", "service-area.md", "pricing-guardrails.md", "do-not-contact.csv"], task: (p) => `A lead or customer (contact ${p.contact_id}) texted back. Run reply-handling. Payload: ${JSON.stringify(p)}. Draft replies as DRAFT notes + approval tasks; book a calendar appointment only when reply-handling says so.` },
+  followup_sweep: { skills: ["estimate-followups"], tools: [...CORE_TOOLS, ...OPP_TOOLS], files: ["company-profile.md"], task: () => `Daily estimate follow-up sweep. Run estimate-followups: find Estimate Sent opportunities due today, stage one draft each. Send nothing yourself.` },
   appointment_completed: { skills: ["estimate-drafting"], tools: [...CORE_TOOLS, ...OPP_TOOLS, ...CAL_TOOLS], files: ["company-profile.md", "pricing-guardrails.md", "price-book.md", "estimate-template.md"], task: (p) => `Appointment complete for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Draft the estimate from the appointment notes and photos per estimate-drafting. Stage for approval as a contact task. Send nothing.` },
   crew_done: { skills: ["permits-inspections"], tools: [...CORE_TOOLS, ...OPP_TOOLS, ...CAL_TOOLS], files: ["company-profile.md", "permits.md"], task: (p) => `Job marked done for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Per permits-inspections: request inspection, draft the homeowner window text as a DRAFT note + approval task. Send nothing to the homeowner.` },
   daily_brief: { skills: ["daily-brief"], tools: [...CORE_TOOLS, ...OPP_TOOLS, ...CAL_TOOLS], files: ["company-profile.md"], task: (p) => `Produce the daily brief per daily-brief for mode=${p.mode ?? "?"} (standard mode leads with pipeline and today's visits; storm mode leads with the queue). Deliver it to the owner's contact record (SMS + email) through the gate. Health line (verbatim, from the code health check): ${p.health ?? "n/a"}. Pending approvals (use these exact numbers in the APPROVE n lines): ${JSON.stringify(p.pending_approvals ?? [])}. Compliance line for the BLOCKED/STATUS section (verbatim): ${p.compliance ?? "n/a"}` },
@@ -235,7 +237,7 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     // INBOUND: note). Fetch it deterministically so classification never depends on the model remembering to look.
     let inbound = typeof job.payload?.message === "string" ? job.payload.message.trim() : "";
     let inboundVia: "payload" | "note" | "sms" | "" = inbound ? "payload" : "";
-    if (job.kind === "intake" && job.payload?.contact_id) {
+    if ((job.kind === "intake" || job.kind === "inbound_reply") && job.payload?.contact_id) {
       try {
         const notesRaw = await callTool(loc, "contacts_get-notes", { contactId: job.payload.contact_id });
         const notes: any[] = JSON.parse(notesRaw.text).notes ?? [];
@@ -254,11 +256,13 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
         log({ tool: "inbound_lookup", ok: true, ms: Date.now() - t0, result_excerpt: inbound ? `[${inboundVia}] ` + inbound.slice(0, 200) : "(no inbound text found)" });
       } catch (e) { log({ tool: "inbound_lookup", ok: false, ms: Date.now() - t0, result_excerpt: String(e).slice(0, 200) }); }
       gctx.inboundText = inbound || undefined;
+      // A reply that just arrived (job created < 15 min ago) may be answered through quiet hours and past the weekly cap.
+      if (job.kind === "inbound_reply") gctx.inboundAt = new Date(job.created_at ?? Date.now()).getTime();
 
       // Compliance, in code: an opt-out keyword ends the job before the model sees it; otherwise the way the lead
       // reached us is the consent record the gate will require before any live SMS.
       const p = job.payload ?? {};
-      const src = String(p.source ?? p.lead_source ?? p.contact_source ?? p.contact?.source ?? "").toLowerCase();
+      const src = String(p.source ?? p.lead_source ?? p.contact_source ?? p.contact?.source ?? (job.kind === "inbound_reply" ? "sms" : "")).toLowerCase();
       if (inbound && STOP_RE.test(inbound)) {
         await recordConsent(db, loc, p.contact_id, "opted_out", "stop_keyword", inbound, job.id);
         await callTool(loc, "contacts_add-tags", { contactId: p.contact_id, tags: ["do-not-contact"] });
@@ -303,7 +307,7 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     const taskText = `Now: ${new Date().toISOString()} (${settings.timezone ?? "America/Chicago"}). Mode: ${cv.mode ?? "?"}.\n` + spec.task(job.payload ?? {}) + (job.kind === "intake"
       ? (inbound ? `\n\nINBOUND MESSAGE FROM THE LEAD (verbatim — this is what you are classifying; copy any address from it exactly, including the house number): """${inbound}"""`
                  : `\n\nNo inbound message text exists yet for this lead (webhook had none, no INBOUND: note, no inbound conversation). Treat it as a lead with unknown damage: ask for the one most useful thing (address first, then photos).`)
-      : "");
+      : job.kind === "inbound_reply" ? `\n\nTHE REPLY (verbatim): """${inbound || "(no text found — say so and stop)"}"""` : "");
     const messages: Msg[] = [{ role: "user", content: taskText }];
     let calls = 0, finalText = "";
     for (let turn = 0; turn < MAX_TOOL_CALLS + 5; turn++) {
@@ -592,6 +596,7 @@ async function healthCheck(db: ReturnType<typeof admin>, loc: string, job: any, 
   const have = new Set((files ?? []).map((f: any) => f.path));
   for (const f of ["company-profile.md", "service-area.md", "pricing-guardrails.md", "do-not-contact.csv"]) if (!have.has(f)) hard.push(`company_files:${f}`);
   if (!settings.owner_contact_id) hard.push("company_files:owner_contact_id"); if (!settings.owner_user_id) warn.push("owner_user_id_missing");
+  if (!cv.wh_reply) warn.push("custom_values:wh_reply_missing(WF-13_replies_not_wired)");
   if (trade && !(await repoFile(`trades/${trade}.md`))) hard.push(`company_files:trades/${trade}.md`);
   // pipelines + workflows (one gateway call each)
   try { const r = await callTool(loc, "opportunities_get-pipelines", {}); const names = (JSON.parse(r.text).pipelines ?? []).map((p: any) => p.name); for (const n of ["Storm Response", "Standard Jobs"]) if (!names.includes(n)) hard.push(`pipelines:${n.replace(/\s+/g, "_")}`); } catch (e) { hard.push("pipelines:unreadable"); log({ tool: "opportunities_get-pipelines", ok: false, result_excerpt: String(e).slice(0, 120) }); }
