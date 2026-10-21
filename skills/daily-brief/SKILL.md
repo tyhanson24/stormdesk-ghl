@@ -5,7 +5,7 @@ description: 6:00 AM owner brief — new leads overnight, today's emergency and 
 
 # Daily brief
 
-Read custom value `bot_last_health` first (written by `health-check`); its failing checks are the BLOCKED line.
+The task gives you the mode and the health line (from the code health check); the health line's failing checks are the BLOCKED line. Storm mode leads with the queue; standard mode leads with the pipeline and today's visits.
 
 Keep it under 25 lines. Owner reads it in the truck.
 
@@ -18,7 +18,7 @@ Keep it under 25 lines. Owner reads it in the truck.
 - Payments: `payments_list-transactions` last 24h; `Complete – Collect` opps with no payment > 7 days.
 - Approvals queued by the other bots.
 
-## Format
+## Format — storm mode
 ```
 DISPATCH BRIEF – {Day, date} – {Company}
 NEW: {n} leads overnight ({emergency} emergency, {major} major) · {unanswered} unanswered > 2h
@@ -28,4 +28,17 @@ STUCK: {list ≤5, one line each, oldest first}
 CASH: collected ${x} yesterday · ${y} outstanding on {n} completed jobs
 BLOCKED: {logins expired / portal down / missing price book line}
 ```
+## Format — standard mode
+```
+DISPATCH BRIEF – {Day, date} – {Company}
+NEW: {n} requests since yesterday ({repair} repair, {quote} quotes, {maintenance} maintenance, {warranty} warranty) · {unanswered} unanswered > 2h
+TODAY: {n} estimates ({estimator}: {n}) · {n} jobs · {n} inspections
+APPROVALS WAITING: {n} texts, {n} estimates → reply APPROVE ALL or open the queue
+FOLLOW UP: {n} estimates out > 5 days with no answer · {n} due today
+STUCK: {list ≤5, one line each, oldest first}
+CASH: collected ${x} yesterday · ${y} outstanding on {n} completed jobs
+BLOCKED: {health line failures, or "nothing"}
+```
+Skip any line whose count is zero except NEW and APPROVALS WAITING.
+
 Send as SMS + email to the owner via `conversations_send-a-new-message` on the owner's contact record (tag `owner`), and post in the bot chat.
