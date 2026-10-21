@@ -1,6 +1,6 @@
 ---
 name: setup-customer
-description: Onboard a new Dispatch client. Takes the intake-form answers for ONE company, calls the platform's setup tool (creates the sub-account from the Dispatch snapshot, tenant + ingest key, owner contact, all 17 custom values pointed at the cloud worker, company files, mode=test), then posts the checklist of what is left for Ty. Also builds the A2P (10DLC) registration packet when Ty asks for it. Run only when Ty names the client and says to set them up.
+description: Onboard a new Dispatch client. Takes the intake-form answers for ONE company, calls the platform's setup tool (creates the sub-account from the Dispatch snapshot, tenant + ingest key, owner contact, all 18 custom values pointed at the cloud worker, company files incl. a starter price book + estimate template, mode=test), then posts the checklist of what is left for Ty. Also builds the A2P (10DLC) registration packet when Ty asks for it. Run only when Ty names the client and says to set them up.
 ---
 
 # Setup customer
@@ -23,7 +23,7 @@ The heavy lifting is one tool call: `dispatch_setup-customer` on the `ghl` conne
 Post to Ty, in this order, nothing else:
 ```
 SETUP — {company_name} — {location_id}
-owner contact {owner_contact_id} · ingest key stored · 17 custom values written · mode=test
+owner contact {owner_contact_id} · ingest key stored · 18 custom values written (incl. wh_reply for WF-13) · price-book.md + estimate-template.md seeded · mode=test
 Remaining:
 1. {each line from `remaining`}
 ```
