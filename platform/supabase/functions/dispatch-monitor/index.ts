@@ -11,7 +11,7 @@ type Found = { key: string; severity: Sev; title: string; detail?: Record<string
 const RANK: Record<Sev, number> = { info: 0, warn: 1, crit: 2 };
 const BUDGET_USD_PER_DAY = 25;      // per sub-account model spend before a warn
 const QUEUE_STUCK_SEC = 600;        // runnable job older than this with no worker activity
-const AUTO_RESOLVE_PREFIX = ["cv_read|", "queue_stuck", "worker_silent", "failure_spike", "token_refresh|", "token_expired|", "carrier_block|", "gateway_down", "budget|", "uninstalled|", "dead_jobs"];
+const AUTO_RESOLVE_PREFIX = ["health_fail|", "cv_read|", "queue_stuck", "worker_silent", "failure_spike", "token_refresh|", "token_expired|", "carrier_block|", "gateway_down", "budget|", "uninstalled|", "dead_jobs"];
 
 // Read one sub-account's custom values through the gateway (the token broker → HighLevel). Returns {cv} or {error}.
 async function readCv(loc: string): Promise<{ cv?: Record<string, string>; error?: string }> {
@@ -66,6 +66,15 @@ async function evaluate(db: ReturnType<typeof admin>, alertLoc: string): Promise
     db.from("usage_daily").select("location_id, day, model_cost_usd, runs").eq("day", new Date().toISOString().slice(0, 10)),
   ]);
   const qs: any = q ?? {};
+  // 0 keep agency tokens warm: nothing uses them between installs, so ask the broker (it refreshes when < 5 min left).
+  for (const t of tenants ?? []) {
+    if (t.kind !== "agency" || t.status !== "installed" || !t.expires_at || new Date(t.expires_at).getTime() - Date.now() > 3600e3) continue;
+    try {
+      const r = await fetch(`${env("PUBLIC_BASE_URL")}/functions/v1/dispatch-token`, { method: "POST", headers: { "content-type": "application/json", "x-dispatch-key": env("DISPATCH_INTERNAL_KEY") }, body: JSON.stringify({ companyId: t.company_id }), signal: AbortSignal.timeout(20_000) });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j?.expires_at) { t.expires_at = j.expires_at; t.last_error = null; }
+    } catch { /* the token rules below report it */ }
+  }
   // 1 dead jobs (one alert, listing ids; re-raised as new ones die because the key includes the newest id)
   if ((dead ?? []).length) {
     const newest = dead![0];
@@ -87,6 +96,10 @@ async function evaluate(db: ReturnType<typeof admin>, alertLoc: string): Promise
     // 5 carrier pause (open while sms_paused is set)
     if (t.settings?.sms_paused) out.push({ key: `carrier_block|${t.location_id}`, severity: "crit", title: `SMS paused on ${t.settings?.company_name ?? id}: ${t.settings.sms_paused.reason}`, detail: { since: t.settings.sms_paused.at, recent: (blocks ?? []).filter((b: any) => b.location_id === t.location_id).length }, location_id: t.location_id });
   }
+  // 5b health check (code, 05:30 local): latest health:* event per sub-account in the last 36 h
+  const { data: hev } = await db.from("tenant_events").select("location_id, event, detail, created_at").in("event", ["health:ok", "health:fail"]).gte("created_at", new Date(Date.now() - 36 * 3600e3).toISOString()).order("created_at", { ascending: false });
+  const seenH = new Set<string>();
+  for (const h of hev ?? []) { if (!h.location_id || seenH.has(h.location_id)) continue; seenH.add(h.location_id); if (h.event === "health:fail") out.push({ key: `health_fail|${h.location_id}`, severity: "crit", title: `health check FAIL on ${(tenants ?? []).find((t: any) => t.location_id === h.location_id)?.settings?.company_name ?? h.location_id}: ${(h.detail?.hard ?? []).join(", ")}`, detail: h.detail ?? {}, location_id: h.location_id }); }
   // 6 budget
   for (const u of usage ?? []) if (Number(u.model_cost_usd) > BUDGET_USD_PER_DAY) out.push({ key: `budget|${u.location_id}|${u.day}`, severity: "warn", title: `${u.location_id} spent $${Number(u.model_cost_usd).toFixed(2)} on the model today (${u.runs} runs)`, detail: u, location_id: u.location_id });
   // 7 gateway probe (through the token broker → HighLevel) — doubles as the tenant_cv refresh for the console.
@@ -108,6 +121,7 @@ const RUNBOOK: Record<string, { what: string; fix: string }> = {
   carrier_block: { what: "Homeowner texting is paused because sends were failing at the carrier.", fix: "Check the number / A2P status in Trust Center, fix it, then dispatch_sms-resume." },
   gateway_down:  { what: "The gateway or token broker is not answering.", fix: "Check Supabase status and the dispatch-hl / dispatch-token logs." },
   budget:        { what: "Model spend for this account is above the daily budget.", fix: "Check the dashboard for a job loop (same contact over and over); raise the budget in dispatch-monitor if it is legitimate." },
+  health_fail:   { what: "The 5:30 AM health check found something broken on this sub-account (setup, workflows, phone/A2P, files).", fix: "The alert title lists the failing checks; the health-check skill doc explains each. Fix, then it clears at the next check." },
   cv_read:       { what: "The platform could not read this sub-account's settings from HighLevel.", fix: "Usually a token problem on that sub-account: reinstall the app there." },
   uninstalled:   { what: "The Dispatch app is no longer installed on this sub-account — nothing runs for it.", fix: "Reinstall from the agency or confirm the client is gone and set tenants.status accordingly." },
 };
