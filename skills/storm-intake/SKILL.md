@@ -1,11 +1,26 @@
 ---
 name: storm-intake
-description: Turn a new inbound (missed-call text-back reply, web form, voicemail transcript, FB/Nextdoor message) into a qualified HighLevel contact + Storm Response opportunity with address, damage type, severity, photos, insurance status. Use whenever a new lead or reply arrives.
+description: Turn a new inbound (missed-call text-back reply, web form, voicemail transcript, FB/Nextdoor message) into a classified HighLevel contact + opportunity with address, request type, damage type, severity, photos, insurance status — in storm mode (queue + severity ladder) or standard mode (everyday repair / quote / maintenance / warranty requests). Use whenever a new lead or reply arrives.
 ---
 
-# Storm intake
+# Intake (storm mode and standard mode)
 
-Goal: within minutes, every inbound becomes a complete contact + opportunity in `Storm Response › New Lead` or `Qualified – Needs Estimate`, and the homeowner knows they're on the list.
+Goal: within minutes, every inbound becomes a complete contact + opportunity, classified, with the homeowner told what happens next. The **mode** (custom value, also stated in the task) decides the voice and the pipeline:
+- `storm` — Storm Response pipeline, severity ladder from the trade pack's storm rules, queue language ("in order of severity"), no exclamation marks.
+- `standard` (and `test`/`shadow` unless the task says storm) — Standard Jobs pipeline, everyday service language, the trade pack's `services` / `lead_time` / `phone_quote_ok` values, normal tone.
+
+## Request type (always, both modes)
+Classify every inbound as exactly one, and add the matching tag (`req-emergency`, `req-repair`, `req-quote`, `req-maintenance`, `req-warranty`, `req-status`, `req-billing`, `req-other`):
+| type | means | pipeline stage |
+|---|---|---|
+| emergency | active damage / safety now (pack `emergency_rule`) | New Lead, tag `emergency` + pack tag, owner notified |
+| repair | something broken, not urgent | New Lead → Qualified when address + photos |
+| quote | new install / replacement / bigger project | New Lead → Qualified when address known (photos optional) |
+| maintenance | recurring or seasonal service (pack `maintenance`) | Qualified – Needs Estimate if a visit is needed, else book directly |
+| warranty | callback on work we did | New Lead, tag `warranty`, owner notified same day |
+| status | existing customer asking where things stand | no new opportunity; answer from the existing opp's stage (status-updates skill) |
+| billing | invoice / payment question | no opportunity; draft a short reply, flag the owner |
+| other | can't tell yet | ask the one most useful question |
 
 ## Trigger inputs you may receive
 - Webhook payload from GHL workflow `WF-02 New Storm Lead` (contact id, source, first message) → routine R1.
@@ -19,7 +34,7 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
 4. Address check: inside service-area? If not → tag `out-of-area`, set urgency_score 0, write the OUT-OF-AREA draft as a `DRAFT:` note plus an owner approval task (same as any other reply), no opportunity, stop.
 5. Severity from the trade pack: `Emergency` = `{pack.emergency_rule}`. `Major` = `{pack.major_rule}`. `Minor` = `{pack.minor_rule}`. `Unknown` = no detail yet.
 6. Upsert contact fields: property_address, damage_type, damage_severity, has_photos, insurance_claim, lead_source, storm_event.
-7. Opportunity (REST `POST /opportunities/`): search first with `opportunities_search-opportunity`. If none, create in `Storm Response › New Lead` with name `"{Last name} – {damage_type} – {street}"`. Move to `Qualified – Needs Estimate` only when ALL of: address known, severity is Major or Minor (not Unknown), and photos are attached (`has_photos` = Yes). No photos → stays in `New Lead` (ask for them). If Emergency → tag `emergency` + `{pack.emergency_tag}`, notify owner immediately (GHL SMS to the owner's contact record; WF-03 also calls the owner natively), keep in `New Lead` until Dispatcher schedules the tarp.
+7. Opportunity (REST `POST /opportunities/`): search first with `opportunities_search-opportunity`. If none, create in `Storm Response › New Lead` (storm mode) or `Standard Jobs › New Lead` (standard mode) with name `"{Last name} – {damage_type or service} – {street}"`. Move to `Qualified – Needs Estimate` only when ALL of: address known, severity is Major or Minor (not Unknown), and photos are attached (`has_photos` = Yes). No photos → stays in `New Lead` (ask for them). If Emergency → tag `emergency` + `{pack.emergency_tag}`, notify owner immediately (GHL SMS to the owner's contact record; WF-03 also calls the owner natively), keep in `New Lead` until Dispatcher schedules the tarp.
 8. Draft the reply (see templates). Write it as a contact note (REST) in exactly this format and nothing else:
    ```
    DRAFT: {template id} | sms | {ISO timestamp}
@@ -28,7 +43,7 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
    Two lines only: no explanation, no severity notes, no "why" after the message (reasoning goes in your run log, not the note). Then create a contact task (REST) titled `Approve: intake reply → {name}` assigned to the owner, due now. Missing info → ask for ONE thing at a time (address first, then photos).
 9. Set `next_followup_date` = +1 day if waiting on info, else leave for Dispatcher.
 10. Tags (use `contacts_add-tags`; add every one that applies, in one call):
-   - always `storm-lead` and `bot-drafted`;
+   - always `storm-lead` (the WF-02 trigger tag, every mode), `new-request`, `bot-drafted`, and the one `req-*` tag;
    - `needs-photos` when no photos were attached (whenever you draft ASK-PHOTOS);
    - `insurance` when the lead mentions insurance or a claim;
    - `emergency` + `{pack.emergency_tag}` when severity is Emergency;
@@ -38,19 +53,28 @@ Goal: within minutes, every inbound becomes a complete contact + opportunity in 
 
 ## Templates (adapt to company voice; never add price)
 
-**ACK-1** (first reply when address + damage known):
-"Thanks {first}. You're on our list for {street}. We're working {storm_event} damage in order of severity and date received. Next step: {pack.estimate_next_step | pack.emergency_next_step}. Reply here anytime. — {Company}"
+Pick the mode's version. Same template ids in both modes so approvals, auto_ack flags and the golden test don't change.
+
+**ACK-1** (first reply when address + request known)
+- storm: "Thanks {first}. You're on our list for {street}. We're working {storm_event} damage in order of severity and date received. Next step: {pack.estimate_next_step | pack.emergency_next_step}. Reply here anytime. — {Company}"
+- standard: "Thanks {first}. Got your request for {pack.job_noun or the service they named} at {street}. Next step: {pack.standard_next_step}. {pack.lead_time}. Reply here anytime. — {Company}"
+- standard + emergency: "Thanks {first}. We treat that as urgent — {pack.emergency_next_step}. Reply here if anything changes. — {Company}"
 
 **ASK-ADDRESS**: "Thanks for reaching out. What's the property address? Then send a couple photos of the damage if you can safely take them. — {Company}"
 
 **ASK-PHOTOS**: "Got it, {street}. If you can safely take {pack.photo_guidance}, text them here — it helps us put you in the right line. — {Company}"
 
-**OUT-OF-AREA**: "Thanks for reaching out. {Street} is outside the area we can reach right now while we work storm damage locally. If that changes we'll let you know. — {Company}"
+**OUT-OF-AREA**
+- storm: "Thanks for reaching out. {Street} is outside the area we can reach right now while we work storm damage locally. If that changes we'll let you know. — {Company}"
+- standard: "Thanks for reaching out. {Street} is outside our service area, so we can't take this one on. — {Company}"
+
+**STATUS-REPLY** (request type = status; no new opportunity): one or two lines from the existing opportunity's stage per the status-updates skill, e.g. "Your estimate is with {estimator}; you'll have it by {day}. — {Company}". Never invent a date that isn't on the calendar.
 
 **STORM-CHASER-NOTE** (only if homeowner mentions door-knockers): add one line: "Quick note: ask any company for their Florida license number and local address before signing anything."
 
 ## Scoring (writes `urgency_score`)
-Emergency 90–100 · Major with photos 60–80 · Major no photos 50 · Unknown (no detail yet) 40 · Minor 20–40 · Insurance=Yes +5 · Elderly/medical mention +10 · Repeat customer +10 · out-of-area → 0. Never leave urgency_score blank.
+Storm mode: Emergency 90–100 · Major with photos 60–80 · Major no photos 50 · Unknown (no detail yet) 40 · Minor 20–40 · Insurance=Yes +5 · Elderly/medical mention +10 · Repeat customer +10 · out-of-area → 0.
+Standard mode: emergency 90 · warranty 70 · repair 60 · quote 50 · maintenance 30 · status/billing 10 · repeat customer +10 · out-of-area → 0. Never leave urgency_score blank.
 
 ## Sending
 Any send (including auto_ack) passes through `send-gate` first.
