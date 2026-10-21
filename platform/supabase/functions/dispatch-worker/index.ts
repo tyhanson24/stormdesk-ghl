@@ -36,17 +36,23 @@ function setupProblems(loc: string, cv: Record<string, string>): string[] {
   return out;
 }
 
-const KIND_SPEC: Record<string, { skills: string[]; task: (p: any) => string }> = {
-  intake: { skills: ["storm-intake"], task: (p) => `New lead webhook received. Run storm-intake on contact ${p.contact_id} using this payload: ${JSON.stringify(p)}. Draft the reply as a contact note (exact DRAFT format) + an approval task for the owner. Do NOT call conversations_send-a-new-message unless the template you drafted is explicitly listed in the auto-send flags given in the system prompt; the DRAFT note + approval task IS the deliverable otherwise.` },
-  approval_reply: { skills: [], task: (p) => `Owner replied to an approval. Reply text: ${JSON.stringify(p.message ?? p.body ?? "")}. Owner contact: ${p.contact_id}. Find the matching open "Approve:" task(s) on the owner's tasks and the DRAFT notes they reference. APPROVE ALL / APPROVE n → send that draft exactly as written via conversations_send-a-new-message with template set to the draft's template id and approval set to "owner-reply"; tag bot-sent; mark the task complete; convert the DRAFT note to SENT. NO n → mark the task complete with the owner's note, do not send. EDIT n <text> → replace the draft text, re-run the gate, send. Anything else → leave tasks open and say so.` },
-  appointment_completed: { skills: ["estimate-drafting"], task: (p) => `Appointment complete for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Draft the estimate from the appointment notes and photos per estimate-drafting. Stage for approval as a contact task. Send nothing.` },
-  crew_done: { skills: ["permits-inspections"], task: (p) => `Job marked done for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Per permits-inspections: request inspection, draft the homeowner window text as a DRAFT note + approval task. Send nothing to the homeowner.` },
-  daily_brief: { skills: ["daily-brief"], task: (p) => `Produce the daily brief per daily-brief. Deliver it to the owner's contact record (SMS + email) through the gate. Pending approvals (use these exact numbers in the APPROVE n lines): ${JSON.stringify(p.pending_approvals ?? [])}. Compliance line for the BLOCKED/STATUS section (verbatim): ${p.compliance ?? "n/a"}` },
-  health_check: { skills: ["health-check"], task: () => `Run health-check. Write bot_last_health. Report hard failures.` },
-  welcome: { skills: [], task: () => "(code-only: owner welcome sequence)" },
-  delivery_check: { skills: [], task: () => "(code-only: delivery status + carrier-block monitor)" },
-  optout: { skills: [], task: () => "(code-only: STOP keyword → consent ledger + DND)" },
-  custom: { skills: [], task: (p) => String(p.instruction ?? "No instruction given. Say so and stop.") },
+// Per kind: which skills, which gateway tools (allowlist — the full list is ~60 tools and costs ~8K tokens a turn),
+// which company files, and the task text. ALL = every tool. Code-only kinds never call the model.
+const CORE_TOOLS = ["contacts_get-contact", "contacts_search", "contacts_update-contact", "contacts_add-tags", "contacts_remove-tags", "contacts_create-note", "contacts_get-notes", "contacts_create-task", "contacts_get-all-tasks", "conversations_search-conversation", "conversations_get-messages", "conversations_send-a-new-message", "locations_get-custom-values", "users_get-users", "hl_request"];
+const OPP_TOOLS = ["opportunities_get-pipelines", "opportunities_search-opportunity", "opportunities_get-opportunity", "opportunities_create-opportunity", "opportunities_update-opportunity"];
+const CAL_TOOLS = ["calendars_get-calendars", "calendars_get-calendar-events", "calendars_get-appointment-notes", "calendars_create-appointment"];
+const ALL_FILES = ["company-profile.md", "service-area.md", "pricing-guardrails.md", "do-not-contact.csv", "permits.md", "price-book.md", "estimate-template.md"];
+const KIND_SPEC: Record<string, { skills: string[]; tools: string[] | "ALL"; files: string[]; task: (p: any) => string }> = {
+  intake: { skills: ["storm-intake"], tools: [...CORE_TOOLS, ...OPP_TOOLS, "contacts_upsert-contact", "contacts_create-contact"], files: ["company-profile.md", "service-area.md", "pricing-guardrails.md", "do-not-contact.csv"], task: (p) => `New lead webhook received. Run storm-intake on contact ${p.contact_id} using this payload: ${JSON.stringify(p)}. Draft the reply as a contact note (exact DRAFT format) + an approval task for the owner. Do NOT call conversations_send-a-new-message unless the template you drafted is explicitly listed in the auto-send flags given in the system prompt; the DRAFT note + approval task IS the deliverable otherwise.` },
+  approval_reply: { skills: [], tools: CORE_TOOLS, files: [], task: (p) => `Owner replied to an approval. Reply text: ${JSON.stringify(p.message ?? p.body ?? "")}. Owner contact: ${p.contact_id}.` },
+  appointment_completed: { skills: ["estimate-drafting"], tools: [...CORE_TOOLS, ...OPP_TOOLS, ...CAL_TOOLS], files: ["company-profile.md", "pricing-guardrails.md", "price-book.md", "estimate-template.md"], task: (p) => `Appointment complete for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Draft the estimate from the appointment notes and photos per estimate-drafting. Stage for approval as a contact task. Send nothing.` },
+  crew_done: { skills: ["permits-inspections"], tools: [...CORE_TOOLS, ...OPP_TOOLS, ...CAL_TOOLS], files: ["company-profile.md", "permits.md"], task: (p) => `Job marked done for contact ${p.contact_id}. Payload: ${JSON.stringify(p)}. Per permits-inspections: request inspection, draft the homeowner window text as a DRAFT note + approval task. Send nothing to the homeowner.` },
+  daily_brief: { skills: ["daily-brief"], tools: [...CORE_TOOLS, ...OPP_TOOLS, ...CAL_TOOLS], files: ["company-profile.md"], task: (p) => `Produce the daily brief per daily-brief for mode=${p.mode ?? "?"} (standard mode leads with pipeline and today's visits; storm mode leads with the queue). Deliver it to the owner's contact record (SMS + email) through the gate. Health line (verbatim, from the code health check): ${p.health ?? "n/a"}. Pending approvals (use these exact numbers in the APPROVE n lines): ${JSON.stringify(p.pending_approvals ?? [])}. Compliance line for the BLOCKED/STATUS section (verbatim): ${p.compliance ?? "n/a"}` },
+  health_check: { skills: [], tools: [], files: [], task: () => "(code-only: setup, compliance, workflow and approval checks → bot_last_health)" },
+  welcome: { skills: [], tools: [], files: [], task: () => "(code-only: owner welcome sequence)" },
+  delivery_check: { skills: [], tools: [], files: [], task: () => "(code-only: delivery status + carrier-block monitor)" },
+  optout: { skills: [], tools: [], files: [], task: () => "(code-only: STOP keyword → consent ledger + DND)" },
+  custom: { skills: [], tools: "ALL", files: ALL_FILES, task: (p) => String(p.instruction ?? "No instruction given. Say so and stop.") },
 };
 
 // ---------- owner welcome copy (config/welcome-copy.md, approved by Ty 2026-10-20) ----------
@@ -181,6 +187,12 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     }
 
     const trade = (cv.trade ?? settings.trade ?? "").toString().trim().toLowerCase();
+    if (job.kind === "health_check") {
+      const summary = await healthCheck(db, loc, job, cv, settings, trade, log);
+      await finish(db, job, run.id, summary.includes(" FAIL") ? "blocked" : "succeeded", steps, inTok, outTok, summary, null);
+      return;
+    }
+    if (job.kind === "daily_brief") job.payload = { ...(job.payload ?? {}), mode: cv.mode ?? "?", health: cv.bot_last_health ?? "no health check yet" };
     const [rules, sendGate, ...kindSkills] = await Promise.all([
       repoFile("skills/ghl-operating-rules/SKILL.md"), repoFile("skills/send-gate/SKILL.md"),
       ...spec.skills.map((s) => repoFile(`skills/${s}/SKILL.md`)),
@@ -189,17 +201,17 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     const pack = trade ? await repoFile(`trades/${trade}.md`) : "";
 
     const system = [
-      `You are Dispatch, the operations agent for one home-service contractor's HighLevel sub-account (locationId ${loc}). You act ONLY through the tools provided. There is no filesystem: the company files you would read from /workspace are included below. Mode and flags come from the custom values already read: mode=${cv.mode ?? "?"}, bots_enabled=${cv.bots_enabled ?? "?"}, trade=${trade || "?"}, company_name=${cv.company_name ?? "?"}. Owner contact id: ${settings.owner_contact_id ?? "unknown (search by owner_phone custom value if needed)"}. Owner user id for task assignedTo (required by HighLevel): ${settings.owner_user_id ?? "unknown — call users_get-users once"}. Timezone: ${settings.timezone ?? "America/Chicago"}. Now: ${new Date().toISOString()}. Auto-send flags (templates that may be sent without owner approval): ${JSON.stringify(Array.isArray(settings.auto) ? settings.auto : (settings.auto_ack ? ["ACK-1"] : []))} — anything else is draft-only.`,
+      `You are Dispatch, the operations agent for one home-service contractor's HighLevel sub-account (locationId ${loc}). You act ONLY through the tools provided. There is no filesystem: the company files you would read from /workspace are included below. Mode and flags come from the custom values already read: mode=${cv.mode ?? "?"}, bots_enabled=${cv.bots_enabled ?? "?"}, trade=${trade || "?"}, company_name=${cv.company_name ?? "?"}. Owner contact id: ${settings.owner_contact_id ?? "unknown (search by owner_phone custom value if needed)"}. Owner user id for task assignedTo (required by HighLevel): ${settings.owner_user_id ?? "unknown — call users_get-users once"}. Timezone: ${settings.timezone ?? "America/Chicago"}. Auto-send flags (templates that may be sent without owner approval): ${JSON.stringify(Array.isArray(settings.auto) ? settings.auto : (settings.auto_ack ? ["ACK-1"] : []))} — anything else is draft-only.`,
       `Every send through conversations_send-a-new-message is checked by a code-level send gate before it reaches HighLevel; if it comes back BLOCKED, write the BLOCKED note as the send-gate skill says and move on — never retry with different wording or another channel. Pass "template" (template id) and, for approved drafts, "approval" on every send call.`,
       `Be economical: at most ${MAX_TOOL_CALLS} tool calls. When done, end with a final message whose last paragraph starts with "SUMMARY:" and has 3–8 lines: what you read, what you changed, what's waiting on approval, what blocked you.`,
       "\n# ghl-operating-rules\n" + rules, "\n# send-gate\n" + sendGate,
       ...kindSkills.map((s, i) => `\n# skill ${i + 1}\n` + s),
       pack ? "\n# trade pack\n" + pack : "",
-      ...Object.entries(fileMap).filter(([p]) => !/^(a2p-packet\.md|sms-terms\.html|privacy\.html)$/.test(p)).map(([p, c]) => `\n# /workspace/${p}\n` + c),   // A2P artifacts are for Ty, not the model
+      ...Object.entries(fileMap).filter(([p]) => spec.files.includes(p)).map(([p, c]) => `\n# /workspace/${p}\n` + c),   // only the files this kind reads (A2P artifacts are for Ty, not the model)
     ].join("\n");
 
     const SEND = "conversations_send-a-new-message";
-    const tools = toolList.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
+    const tools = toolList.filter((t) => spec.tools === "ALL" || spec.tools.includes(t.name)).map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema }));
     const sendTool = tools.find((t) => t.name === SEND);
     if (sendTool) sendTool.input_schema = { ...sendTool.input_schema, properties: { ...sendTool.input_schema.properties, template: { type: "string", description: "Template id (e.g. ACK-1). Required." }, approval: { type: "string", description: "Approval token: 'owner-reply' when sending an owner-approved draft." }, booked_event_id: { type: "string", description: "Calendar event id if the text states a date." } } };
 
@@ -288,7 +300,7 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
       return;
     }
 
-    const taskText = spec.task(job.payload ?? {}) + (job.kind === "intake"
+    const taskText = `Now: ${new Date().toISOString()} (${settings.timezone ?? "America/Chicago"}). Mode: ${cv.mode ?? "?"}.\n` + spec.task(job.payload ?? {}) + (job.kind === "intake"
       ? (inbound ? `\n\nINBOUND MESSAGE FROM THE LEAD (verbatim — this is what you are classifying; copy any address from it exactly, including the house number): """${inbound}"""`
                  : `\n\nNo inbound message text exists yet for this lead (webhook had none, no INBOUND: note, no inbound conversation). Treat it as a lead with unknown damage: ask for the one most useful thing (address first, then photos).`)
       : "");
@@ -343,8 +355,10 @@ async function runJob(db: ReturnType<typeof admin>, job: any) {
     // Conditional tags (needs-photos, insurance, emergency…) stay with the model.
     if (job.kind === "intake" && job.payload?.contact_id) {
       const ts = Date.now();
-      const r = await callTool(loc, "contacts_add-tags", { contactId: job.payload.contact_id, tags: ["storm-lead", "bot-drafted"] });
-      log({ tool: "contacts_add-tags", args: { enforced: true, tags: ["storm-lead", "bot-drafted"] }, ok: !r.isError, ms: Date.now() - ts, result_excerpt: r.text.slice(0, 200) });
+      // `storm-lead` stays the WF-02 trigger tag in every mode (snapshot); `new-request` is the mode-neutral marker.
+      const enforced = ["storm-lead", "new-request", "bot-drafted"];
+      const r = await callTool(loc, "contacts_add-tags", { contactId: job.payload.contact_id, tags: enforced });
+      log({ tool: "contacts_add-tags", args: { enforced: true, tags: enforced }, ok: !r.isError, ms: Date.now() - ts, result_excerpt: r.text.slice(0, 200) });
       // Facts the worker knows without the model: lead_source (webhook source), storm_event (custom value), and the
       // follow-up date whenever the draft asks the lead for something (ASK-* template).
       const p = job.payload ?? {};
@@ -563,6 +577,61 @@ async function welcome(db: ReturnType<typeof admin>, loc: string, job: any, cv: 
   await callTool(loc, "contacts_create-note", { contactId: owner, body: `WELCOME step ${step} | ${new Date().toISOString()} | ${line}` }).catch(() => null);
   await db.from("tenant_events").insert({ location_id: loc, event: `welcome:${step}`, detail: { results, mode } });
   return { summary: `welcome step ${step}: ${line}`, blocked: !results.some((r) => r.endsWith(": sent")) };
+}
+
+// Health check, in code (was a 175K-token model run). Mirrors skills/health-check/SKILL.md. Writes custom value
+// bot_last_health = "{ISO} {OK|FAIL} {failing checks}"; emails the agency on a hard failure. Never messages homeowners.
+async function healthCheck(db: ReturnType<typeof admin>, loc: string, job: any, cv: Record<string, string>, settings: Record<string, any>, trade: string, log: (s: any) => void): Promise<string> {
+  const hard: string[] = [], warn: string[] = [];
+  const mode = (cv.mode ?? "test").toLowerCase();
+  // custom values + setup guard
+  for (const k of ["bots_enabled", "mode", "trade", "company_name", "owner_phone", "wh_intake", "wh_approval", "wh_optout", "bot_webhook_key", "bot_webhook_key_intake", "wf02_id"]) if (!cv[k]) hard.push(`custom_values:${k}`);
+  for (const p of setupProblems(loc, cv)) hard.push(`setup:${p.replace(/\s+/g, "_").slice(0, 40)}`);
+  // company files + owner ids
+  const { data: files } = await db.from("tenant_files").select("path").eq("location_id", loc);
+  const have = new Set((files ?? []).map((f: any) => f.path));
+  for (const f of ["company-profile.md", "service-area.md", "pricing-guardrails.md", "do-not-contact.csv"]) if (!have.has(f)) hard.push(`company_files:${f}`);
+  if (!settings.owner_contact_id) hard.push("company_files:owner_contact_id"); if (!settings.owner_user_id) warn.push("owner_user_id_missing");
+  if (trade && !(await repoFile(`trades/${trade}.md`))) hard.push(`company_files:trades/${trade}.md`);
+  // pipelines + workflows (one gateway call each)
+  try { const r = await callTool(loc, "opportunities_get-pipelines", {}); const names = (JSON.parse(r.text).pipelines ?? []).map((p: any) => p.name); for (const n of ["Storm Response", "Standard Jobs"]) if (!names.includes(n)) hard.push(`pipelines:${n.replace(/\s+/g, "_")}`); } catch (e) { hard.push("pipelines:unreadable"); log({ tool: "opportunities_get-pipelines", ok: false, result_excerpt: String(e).slice(0, 120) }); }
+  try { const r = await callTool(loc, "workflows_get-workflows", {}); const wfs: any[] = JSON.parse(r.text).workflows ?? []; for (const want of ["WF-02", "WF-11", "WF-12"]) { const w = wfs.find((x) => String(x.name ?? "").startsWith(want)); if (!w) hard.push(`workflows:${want}_missing`); else if (String(w.status ?? "").toLowerCase() !== "published") hard.push(`workflows:${want}_${w.status}`); } } catch (e) { warn.push("workflows_unreadable"); log({ tool: "workflows_get-workflows", ok: false, result_excerpt: String(e).slice(0, 120) }); }
+  // phone + compliance (tables)
+  const [{ data: a2p }, { data: nums }, { count: stale }, { count: failed24 }, { data: leads }] = await Promise.all([
+    db.from("a2p_registrations").select("campaign_status").eq("location_id", loc).maybeSingle(),
+    db.from("numbers").select("number, kind, verified, status").eq("location_id", loc).eq("status", "active"),
+    db.from("approvals").select("id", { count: "exact", head: true }).eq("location_id", loc).eq("status", "pending").lt("created_at", new Date(Date.now() - 864e5).toISOString()),
+    db.from("outbound_log").select("id", { count: "exact", head: true }).eq("location_id", loc).in("delivery_status", ["failed", "undelivered"]).gte("created_at", new Date(Date.now() - 864e5).toISOString()),
+    db.from("jobs").select("payload").eq("location_id", loc).eq("kind", "intake").gte("created_at", new Date(Date.now() - 7 * 864e5).toISOString()),
+  ]);
+  const live = mode === "storm" || mode === "standard";
+  if (!settings.sms_number && !(nums ?? []).length) (live ? hard : warn).push("phone:no_number");
+  const bridge = (nums ?? []).some((n: any) => n.kind === "tollfree" && n.verified);
+  if (live && a2p?.campaign_status !== "approved" && !bridge) hard.push(`a2p:${a2p?.campaign_status ?? "not_started"}`);
+  if (settings.sms_paused) hard.push("carrier_pause");
+  if ((stale ?? 0) > 0) warn.push(`stale_approvals(${stale})`);
+  if ((failed24 ?? 0) > 0) warn.push(`delivery_failures(${failed24})`);
+  const cids = [...new Set((leads ?? []).map((j: any) => j.payload?.contact_id).filter(Boolean))];
+  if (cids.length) { const { data: cons } = await db.from("consents").select("contact_id").eq("location_id", loc).in("contact_id", cids); const withC = new Set((cons ?? []).map((c: any) => c.contact_id)); const missing = cids.filter((c) => !withC.has(c)).length; if (missing) warn.push(`consent_missing(${missing})`); }
+  const status = hard.length ? "FAIL" : "OK";
+  const line = `${new Date().toISOString()} ${status} ${[...hard, ...warn].join(",") || "all_checks_passed"}`;
+  // write bot_last_health. HighLevel keeps the merge key ({{custom_values.x}}) even if a value is renamed, so match on
+  // the key, and flag any value whose name no longer matches its key (a renamed wh_* breaks the workflow webhooks).
+  let hLine = line;
+  try {
+    const r = await callTool(loc, "locations_get-custom-values", {});
+    const all: any[] = JSON.parse(r.text).customValues ?? [];
+    const keyOf = (v: any) => String(v.fieldKey ?? "").replace(/^\{\{\s*custom_values\.|\s*\}\}$/g, "").trim();
+    const renamed = all.filter((v) => keyOf(v) && keyOf(v) !== v.name).map((v) => `${keyOf(v)}→${v.name}`);
+    if (renamed.length) { hard.push(`custom_values:renamed(${renamed.join(";")})`); hLine = `${new Date().toISOString()} FAIL ${[...hard, ...warn].join(",")}`; }
+    const m = all.find((v) => keyOf(v) === "bot_last_health") ?? all.find((v) => v.name === "bot_last_health");
+    if (m) await callTool(loc, "locations_update-custom-value", { customValueId: m.id, name: "bot_last_health", value: hLine });
+    else await callTool(loc, "hl_request", { method: "POST", path: `/locations/${loc}/customValues`, body: { name: "bot_last_health", value: hLine } });
+    log({ tool: "bot_last_health", ok: true, result_excerpt: hLine });
+  } catch (e) { log({ tool: "bot_last_health", ok: false, result_excerpt: String(e).slice(0, 120) }); }
+  const finalStatus = hard.length ? "FAIL" : "OK";
+  await db.from("tenant_events").insert({ location_id: loc, event: `health:${finalStatus.toLowerCase()}`, detail: { hard, warn, mode } });
+  return `health_check ${finalStatus}: ${[...hard, ...warn].join(", ") || "all checks passed"}`;
 }
 
 // Delivery monitor: follow up every send with HighLevel's message status; auto-pause SMS on a carrier block pattern.
