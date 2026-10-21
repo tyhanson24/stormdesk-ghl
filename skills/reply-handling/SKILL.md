@@ -25,6 +25,8 @@ A lead already in the pipeline texted back. The worker gives you the message ver
 | **says they went elsewhere / not interested** | Opp → `Closed Lost`, reason "customer declined". Tag `closed-lost`. No draft. |
 | **anything else / unclear** | Draft **HOLD**; owner task "Reply from {name} needs a human: {first 80 chars}". |
 
+If the reply has two parts ("Thursday works — is the estimate free?"), draft the primary template and append **one** sentence answering the second part from the company files; never a number, never a date. More than that → HOLD + owner task.
+
 Then always: a contact note `REPLY: {classification} | {first 120 chars}` and `last_inbound_at` = now (custom field if it exists).
 
 ## Templates (exact; `— {Company}` at the end of every SMS)
