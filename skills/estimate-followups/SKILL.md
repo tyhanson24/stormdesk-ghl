@@ -20,6 +20,8 @@ Skip: `next_followup_date` in the future, tag `do-not-contact` / `closed-lost` /
 | 10 | **EST-FU3** | "Last note from us on {street}. If you went another direction, no problem at all — if not, we're here when you're ready. — {Company}" |
 | 14 | — | Opp → `Closed Lost`, reason `no response`; tag `unresponsive`; no text. |
 
+If the contact's first name or street address is blank, do not draft: create an owner task "Fill in name/address for {contact} before follow-up" and skip. The send gate blocks any text that still contains a `{placeholder}`, so never guess a value.
+
 Draft the one template that matches today (never two in one day for one contact). Set `next_followup_date` to the next step's date. Note `FOLLOW-UP: EST-FUn drafted`.
 
 ## Output
