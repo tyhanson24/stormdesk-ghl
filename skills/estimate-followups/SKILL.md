@@ -5,7 +5,7 @@ description: Once a day, find estimates that are out with no answer and stage th
 
 # Estimate follow-ups
 
-Copy below is the cadence from estimate-drafting. **Status: cadence copy pending Ty's sign-off; the daily sweep is not scheduled until he approves it.** When scheduled: 09:00 local, after the brief.
+Copy below is the cadence from estimate-drafting. **Scheduled daily at 09:00 local (after the brief), every client sub-account (migration 0008). Approved by Ty 2026-10-22 on the condition that every text goes through owner approval — it does: numbered DRAFT + APPROVE n, and EST-FU* are never on an auto-send list.**
 
 ## Find
 `opportunities_search-opportunity` pipeline `Standard Jobs` and `Storm Response`, stage `Estimate Sent`. For each, read the contact: `next_followup_date`, `estimate_sent_at` (or the note date of `SENT: EST-SENT`), tags.
